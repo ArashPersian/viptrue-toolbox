@@ -14,7 +14,7 @@ line() {
 
 pause() {
   echo
-  read -rp "Press Enter to continue..."
+  read -r -p "Press Enter to continue..." _
 }
 
 title() {
