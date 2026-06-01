@@ -21,8 +21,7 @@ while true; do
 
   case "$choice" in
     1)
-      echo -e "${YELLOW}Root / SSH Preparation is not configured yet.${NC}"
-      pause
+      bash "$BASE_DIR/modules/work/01-root-ssh.sh"
       ;;
     2)
       echo -e "${YELLOW}Server Update & Basic Packages is not configured yet.${NC}"
