@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_DIR="$HOME/viptrue-toolbox"
+
+cd "$PROJECT_DIR"
+
+mkdir -p modules/work
+
+cat > modules/work/02-update-server.sh <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 export TOOLBOX_VERSION="${TOOLBOX_VERSION:-0.1.0}"
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -169,3 +179,13 @@ while true; do
       ;;
   esac
 done
+EOF
+
+chmod +x modules/work/02-update-server.sh
+
+bash -n modules/work/02-update-server.sh
+
+echo
+echo "✅ Step 3B completed successfully."
+echo "Now run:"
+echo "git add . && git commit -m 'Add CPU info to system report' && git push"
