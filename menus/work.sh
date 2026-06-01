@@ -12,12 +12,13 @@ while true; do
   echo
   echo "1. Root / SSH Preparation"
   echo "2. Server Update & Basic Packages"
-  echo "3. PasarGuard Node"
-  echo "4. Utility Tools"
+  echo "3. UFW Firewall"
+  echo "4. PasarGuard Node"
+  echo "5. Utility Tools"
   echo "0. Back"
   echo
   line
-  read -r -p "Enter your choice [0-4]: " choice
+  read -r -p "Enter your choice [0-5]: " choice
 
   case "$choice" in
     1)
@@ -27,9 +28,12 @@ while true; do
       bash "$BASE_DIR/modules/work/02-update-server.sh"
       ;;
     3)
-      bash "$BASE_DIR/modules/work/03-pasarguard-node.sh"
+      bash "$BASE_DIR/modules/work/03-ufw-firewall.sh"
       ;;
     4)
+      bash "$BASE_DIR/modules/work/03-pasarguard-node.sh"
+      ;;
+    5)
       bash "$BASE_DIR/menus/utility.sh"
       ;;
     0)
