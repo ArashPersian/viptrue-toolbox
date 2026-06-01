@@ -50,6 +50,7 @@ ensure_ufw_installed() {
 get_ssh_port() {
   local port=""
 
+  # 1) Read active Port from main sshd_config.
   port="$(awk '
     /^[[:space:]]*Port[[:space:]]+[0-9]+/ {
       print $2
@@ -57,16 +58,39 @@ get_ssh_port() {
     }
   ' /etc/ssh/sshd_config 2>/dev/null || true)"
 
-  if [[ -z "$port" ]]; then
-    port="$(ss -tulpn 2>/dev/null | awk '
-      /sshd/ && /LISTEN/ {
-        split($5,a,":")
-        print a[length(a)]
+  # 2) Read active Port from sshd_config.d snippets if main config has no active Port.
+  if [[ -z "$port" && -d /etc/ssh/sshd_config.d ]]; then
+    port="$(awk '
+      /^[[:space:]]*Port[[:space:]]+[0-9]+/ {
+        print $2
         exit
+      }
+    ' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true)"
+  fi
+
+  # 3) Detect only real public SSH listening ports.
+  # Ignore localhost-only ports like 127.0.0.1:6010 or [::1]:6010 from X11 forwarding.
+  if [[ -z "$port" ]]; then
+    port="$(ss -ltnp 2>/dev/null | awk '
+      /sshd/ && /LISTEN/ {
+        addr=$4
+
+        if (addr ~ /^127\.0\.0\.1:/) next
+        if (addr ~ /^\[::1\]:/) next
+        if (addr ~ /^localhost:/) next
+
+        n=split(addr,a,":")
+        p=a[n]
+
+        if (p ~ /^[0-9]+$/) {
+          print p
+          exit
+        }
       }
     ' || true)"
   fi
 
+  # 4) Safe default.
   echo "${port:-22}"
 }
 
