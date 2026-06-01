@@ -24,8 +24,7 @@ while true; do
       bash "$BASE_DIR/modules/work/01-root-ssh.sh"
       ;;
     2)
-      echo -e "${YELLOW}Server Update & Basic Packages is not configured yet.${NC}"
-      pause
+      bash "$BASE_DIR/modules/work/02-update-server.sh"
       ;;
     3)
       echo -e "${YELLOW}PasarGuard Node is not configured yet.${NC}"
