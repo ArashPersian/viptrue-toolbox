@@ -42,4 +42,8 @@ find "$INSTALL_DIR" -type f -name "*.sh" -exec chmod +x {} \;
 echo -e "${GREEN}Starting VIPTrue Toolbox...${NC}"
 echo
 
-bash "$INSTALL_DIR/menus/main.sh"
+if [[ -r /dev/tty ]]; then
+  bash "$INSTALL_DIR/menus/main.sh" < /dev/tty
+else
+  bash "$INSTALL_DIR/menus/main.sh"
+fi
