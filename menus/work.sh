@@ -27,8 +27,7 @@ while true; do
       bash "$BASE_DIR/modules/work/02-update-server.sh"
       ;;
     3)
-      echo -e "${YELLOW}PasarGuard Node is not configured yet.${NC}"
-      pause
+      bash "$BASE_DIR/modules/work/03-pasarguard-node.sh"
       ;;
     4)
       bash "$BASE_DIR/menus/utility.sh"
