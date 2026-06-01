@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_DIR="$HOME/viptrue-toolbox"
+cd "$PROJECT_DIR"
+
+cat > modules/work/03-ufw-firewall.sh <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 export TOOLBOX_VERSION="${TOOLBOX_VERSION:-0.1.0}"
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -540,3 +547,12 @@ while true; do
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
 done
+EOF
+
+chmod +x modules/work/03-ufw-firewall.sh
+bash -n modules/work/03-ufw-firewall.sh
+
+echo
+echo "✅ Step 6D completed successfully."
+echo "Now run:"
+echo "git add . && git commit -m 'Add multi-core UFW port detection' && git push"
