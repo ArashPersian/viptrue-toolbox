@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_DIR="$HOME/viptrue-toolbox"
+
+cd "$PROJECT_DIR"
+
+mkdir -p modules/work
+
+cat > modules/work/03-pasarguard-node.sh <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 export TOOLBOX_VERSION="${TOOLBOX_VERSION:-0.1.0}"
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -148,3 +158,13 @@ while true; do
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
 done
+EOF
+
+chmod +x modules/work/03-pasarguard-node.sh
+
+bash -n modules/work/03-pasarguard-node.sh
+
+echo
+echo "✅ Step 4B completed successfully."
+echo "Now run:"
+echo "git add . && git commit -m 'Fix PasarGuard node service detection' && git push"
