@@ -10,16 +10,22 @@ while true; do
   title
   echo -e "${CYAN}Utility Tools${NC}"
   echo
-  echo -e "${YELLOW}Utility Tools menu is empty for now.${NC}"
-  echo -e "${YELLOW}We will add tools one by one after approval.${NC}"
-  echo
+  echo "1. Server Factory-like Reset"
   echo "0. Back"
   echo
   line
-  read -r -p "Enter your choice [0]: " choice
+  read -r -p "Enter your choice [0-1]: " choice
 
   case "$choice" in
-    0) break ;;
-    *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    1)
+      bash "$BASE_DIR/modules/utility/01-factory-reset.sh"
+      ;;
+    0)
+      break
+      ;;
+    *)
+      echo -e "${RED}Invalid choice.${NC}"
+      sleep 1
+      ;;
   esac
 done
