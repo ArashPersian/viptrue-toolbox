@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_DIR="$HOME/viptrue-toolbox"
+cd "$PROJECT_DIR"
+
+cat > modules/work/01-root-ssh.sh <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 export TOOLBOX_VERSION="${TOOLBOX_VERSION:-0.1.0}"
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -716,3 +723,12 @@ while true; do
       ;;
   esac
 done
+EOF
+
+chmod +x modules/work/01-root-ssh.sh
+bash -n modules/work/01-root-ssh.sh
+
+echo
+echo "✅ Step 10 completed successfully."
+echo "Now run:"
+echo "git add . && git commit -m 'Add SSH Doctor for cloud images' && git push"
