@@ -276,6 +276,7 @@ add_single_config_link() {
   echo "- ss:// Shadowsocks"
   echo "- vless:// VLESS"
   echo "- trojan:// Trojan"
+  echo "- vmess:// VMess"
   echo
   echo "Stored/planned:"
   echo "- vless:// vmess:// trojan:// hysteria2:// tuic:// wireguard://"
@@ -387,11 +388,11 @@ generate_proxy_config_from_active_link() {
   link_type="$(get_active_link_type || true)"
   link="$(get_active_link_value || true)"
 
-  if [[ "$link_type" != "shadowsocks" && "$link_type" != "vless" && "$link_type" != "trojan" ]]; then
-    echo -e "${RED}Proxy Mode currently supports ss://, vless:// and trojan:// links.${NC}"
+  if [[ "$link_type" != "shadowsocks" && "$link_type" != "vless" && "$link_type" != "trojan" && "$link_type" != "vmess" ]]; then
+    echo -e "${RED}Proxy Mode currently supports ss://, vless://, trojan:// and vmess:// links.${NC}"
     echo "Active type: ${link_type:-UNKNOWN}"
     echo
-    echo "Next steps: VMess / Subscription."
+    echo "Next step: Subscription import/update."
     return 1
   fi
 
@@ -418,6 +419,27 @@ def first(q, *keys, default=""):
 
 def is_true(value: str) -> bool:
     return str(value).lower() in ("1", "true", "yes", "y")
+
+def safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+        return int(str(value))
+    except Exception:
+        return default
+
+def normalize_security(sec: str, default="auto"):
+    sec = (sec or default).lower()
+    mapping = {
+        "chacha20-poly1305": "chacha20-poly1305",
+        "chacha20-ietf-poly1305": "chacha20-poly1305",
+        "aes-128-gcm": "aes-128-gcm",
+        "aes-128-ctr": "aes-128-ctr",
+        "none": "none",
+        "zero": "zero",
+        "auto": "auto",
+    }
+    return mapping.get(sec, default)
 
 def build_tls(q, security):
     security = (security or "none").lower()
@@ -462,7 +484,7 @@ def build_tls(q, security):
     return tls
 
 def build_transport(q):
-    transport_type = first(q, "type", default="tcp").lower()
+    transport_type = first(q, "type", "net", default="tcp").lower()
 
     if transport_type in ("ws", "websocket"):
         host = first(q, "host")
@@ -631,12 +653,108 @@ def parse_trojan(uri: str):
 
     return outbound
 
+def parse_vmess(uri: str):
+    if not uri.startswith("vmess://"):
+        raise ValueError("Not a VMess link")
+
+    raw = uri[8:].strip()
+
+    if "#" in raw:
+        raw, _frag = raw.split("#", 1)
+
+    decoded = b64decode_padded(raw)
+    obj = json.loads(decoded)
+
+    server = obj.get("add") or obj.get("server") or ""
+    port = safe_int(obj.get("port"), 443)
+    uuid = obj.get("id") or obj.get("uuid") or ""
+
+    if not server or not uuid:
+        raise ValueError("Invalid VMess link: missing server or uuid")
+
+    outbound = {
+        "type": "vmess",
+        "tag": "install-out",
+        "server": server,
+        "server_port": int(port),
+        "uuid": uuid,
+        "security": normalize_security(obj.get("scy") or obj.get("security") or "auto", "auto"),
+        "alter_id": safe_int(obj.get("aid") or obj.get("alterId"), 0)
+    }
+
+    packet_encoding = obj.get("packet_encoding") or obj.get("packetEncoding")
+    if packet_encoding:
+        outbound["packet_encoding"] = packet_encoding
+
+    # VMess TLS
+    tls_mode = (obj.get("tls") or "").lower()
+    if tls_mode in ("tls", "reality"):
+        q = {
+            "sni": [obj.get("sni") or obj.get("serverName") or obj.get("peer") or ""],
+            "fp": [obj.get("fp") or obj.get("fingerprint") or ""],
+            "allowInsecure": [str(obj.get("allowInsecure") or obj.get("insecure") or "")]
+        }
+        tls = build_tls(q, tls_mode)
+        if tls:
+            outbound["tls"] = tls
+
+    # VMess transport
+    net = (obj.get("net") or obj.get("type") or "tcp").lower()
+
+    if net in ("ws", "websocket"):
+        path = obj.get("path") or "/"
+        host = obj.get("host") or ""
+
+        transport = {
+            "type": "ws",
+            "path": path
+        }
+
+        if host:
+            transport["headers"] = {
+                "Host": str(host).split(",")[0]
+            }
+
+        outbound["transport"] = transport
+
+    elif net == "grpc":
+        service_name = obj.get("path") or obj.get("serviceName") or obj.get("service_name") or ""
+
+        transport = {
+            "type": "grpc"
+        }
+
+        if service_name:
+            transport["service_name"] = str(service_name).lstrip("/")
+
+        outbound["transport"] = transport
+
+    elif net in ("httpupgrade", "http_upgrade"):
+        path = obj.get("path") or "/"
+        host = obj.get("host") or ""
+
+        transport = {
+            "type": "httpupgrade",
+            "path": path
+        }
+
+        if host:
+            transport["headers"] = {
+                "Host": str(host).split(",")[0]
+            }
+
+        outbound["transport"] = transport
+
+    return outbound
+
 if link.startswith("ss://"):
     proxy_outbound = parse_ss(link)
 elif link.startswith("vless://"):
     proxy_outbound = parse_vless(link)
 elif link.startswith("trojan://"):
     proxy_outbound = parse_trojan(link)
+elif link.startswith("vmess://"):
+    proxy_outbound = parse_vmess(link)
 else:
     raise ValueError("Unsupported link type for proxy mode")
 
