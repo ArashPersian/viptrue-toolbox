@@ -705,49 +705,28 @@ select_active_outbound() {
     return
   fi
 
-  local row
-  row="$(awk -F'	' -v n="$selected" '$1 == n {print; exit}' "$select_file" || true)"
-
-  if [[ -z "$row" ]]; then
-    echo -e "${RED}Selected item not found.${NC}"
+  echo
+  if ! python3 "$LINK_PROXY_TOOLS" activate \
+    --select-file "$select_file" \
+    --number "$selected" \
+    --active-file "$ACTIVE_LINK_FILE"; then
+    echo -e "${RED}Failed to activate selected outbound.${NC}"
     pause
     return
   fi
 
-  local n id typ source sub_id sub_name link delay_ms test_status
-  IFS=$'	' read -r n id typ source sub_id sub_name link delay_ms test_status <<< "$row"
-
-  {
-    echo "id=$id"
-    echo "type=$typ"
-    echo "source=$source"
-    [[ -n "$sub_id" ]] && echo "sub_id=$sub_id"
-    [[ -n "$sub_name" ]] && echo "sub_name=$sub_name"
-    [[ -n "$delay_ms" ]] && echo "delay_ms=$delay_ms"
-    [[ -n "$test_status" ]] && echo "test_status=$test_status"
-    echo "link=$link"
-  } > "$ACTIVE_LINK_FILE"
-
-  chmod 600 "$ACTIVE_LINK_FILE" 2>/dev/null || true
-
   echo
-  echo -e "${GREEN}Active outbound selected.${NC}"
-  echo "ID: $id"
-  echo "Type: $typ"
-  echo "Source: $source"
-  if [[ -n "$delay_ms" ]]; then
-    echo "Real delay: ${delay_ms} ms"
-  else
-    echo "Test status: ${test_status:-N/A}"
-  fi
+  echo -e "${GREEN}Active file saved correctly.${NC}"
   echo
-  echo "Now you can start Proxy Mode directly:"
+  echo "Now check active file if needed:"
+  echo "cat -A $ACTIVE_LINK_FILE"
+  echo
+  echo "Then start:"
   echo "Proxy Mode > Start Proxy Mode"
   echo
 
   pause
 }
-
 
 generate_proxy_config_from_active_link() {
   ensure_dirs
@@ -767,12 +746,15 @@ generate_proxy_config_from_active_link() {
   link_type="$(get_active_link_type || true)"
   link="$(get_active_link_value || true)"
 
-  link="${link//$''/}"
-  link="${link//$'
-'/}"
+  link="${link//$'\r'/}"
+  link="${link//$'\n'/}"
+  link="$(printf '%s' "$link" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
 
   if [[ -z "${link// /}" ]]; then
     echo -e "${RED}Active link is empty.${NC}"
+    echo
+    echo "Debug active file:"
+    cat -A "$ACTIVE_LINK_FILE" 2>/dev/null || true
     return 1
   fi
 
@@ -781,13 +763,18 @@ generate_proxy_config_from_active_link() {
     *)
       echo -e "${RED}Unsupported active link for Proxy Mode.${NC}"
       echo "Active type: ${link_type:-UNKNOWN}"
+      echo
+      echo "Detected link:"
+      printf '%s\n' "$link" | cut -c1-160
+      echo
+      echo "Debug active file:"
+      cat -A "$ACTIVE_LINK_FILE" 2>/dev/null || true
+      echo
       echo "Supported:"
       echo "- ss://"
       echo "- vless://"
       echo "- trojan://"
       echo "- vmess://"
-      echo
-      echo "Hint: select another outbound from Config Links."
       return 1
       ;;
   esac
@@ -798,7 +785,6 @@ generate_proxy_config_from_active_link() {
     --listen-port 19080 \
     --log-level info
 }
-
 
 write_proxy_helpers() {
   ensure_dirs
