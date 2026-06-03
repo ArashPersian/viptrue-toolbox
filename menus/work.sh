@@ -7,7 +7,6 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$BASE_DIR/lib/ui.sh"
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Work Menu${NC}"
   echo
@@ -17,7 +16,7 @@ while true; do
   echo "4. PasarGuard Node"
   echo "5. Utility Tools"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-5]: " choice
@@ -25,31 +24,26 @@ while true; do
   case "$choice" in
     1)
       bash "$BASE_DIR/modules/work/01-root-ssh.sh"
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     2)
       bash "$BASE_DIR/modules/work/02-update-server.sh"
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     3)
       bash "$BASE_DIR/modules/work/03-ufw-firewall.sh"
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     4)
       bash "$BASE_DIR/modules/work/03-pasarguard-node.sh"
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     5)
       bash "$BASE_DIR/menus/utility.sh"
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     0)
       break
       ;;    99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
 
 

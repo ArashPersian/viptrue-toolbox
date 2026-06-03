@@ -183,7 +183,7 @@ install_singbox_isolated() {
   echo "1. Latest stable from GitHub releases"
   echo "2. Custom version"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   read -r -p "Enter your choice [0-2,99]: " version_choice
 
@@ -843,7 +843,6 @@ show_status_logs() {
 
 tun_experimental_menu() {
   while true; do
-  viptrue_should_exit_toolbox
     title
     echo -e "${CYAN}TUN Mode - Experimental / Disabled${NC}"
     line
@@ -860,7 +859,7 @@ tun_experimental_menu() {
     echo
     echo "1. Cleanup old TUN leftovers"
     echo "0. Back"
-    echo "99. Exit toolbox"
+    echo "99. Main Menu"
     echo
     read -r -p "Enter your choice [0-1,99]: " choice
 
@@ -877,7 +876,7 @@ tun_experimental_menu() {
       99)
         exit_toolbox
         ;;    99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
 
       *)
@@ -898,7 +897,7 @@ config_links_menu() {
     echo "2. Show saved links"
     echo "3. Relay test active link"
     echo "0. Back"
-    echo "99. Exit toolbox"
+    echo "99. Main Menu"
     echo
     read -r -p "Enter your choice [0-3,99]: " choice
 
@@ -925,7 +924,7 @@ proxy_mode_menu() {
     echo "4. Stop Proxy / Cleanup"
     echo "5. Status / Logs"
     echo "0. Back"
-    echo "99. Exit toolbox"
+    echo "99. Main Menu"
     echo
     read -r -p "Enter your choice [0-5,99]: " choice
 
@@ -953,7 +952,7 @@ while true; do
   echo "5. TUN Mode - Experimental / Disabled"
   echo "6. Status / Logs"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-6,99]: " choice

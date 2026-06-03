@@ -195,7 +195,6 @@ generate_random_port() {
   local port
 
   while true; do
-  viptrue_should_exit_toolbox
     port="$(shuf -i 20000-65000 -n 1)"
     if ! port_is_in_use "$port"; then
       echo "$port"
@@ -652,7 +651,7 @@ while true; do
   echo "6. Close old SSH port in UFW"
   echo "7. SSH Doctor / Fix AWS Ubuntu SSH"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-7]: " choice
@@ -712,10 +711,10 @@ while true; do
     0)
       break
       ;;    99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
 
 

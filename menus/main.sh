@@ -7,21 +7,20 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$BASE_DIR/lib/ui.sh"
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Main Menu${NC}"
   echo
   echo "1. Work"
   echo "2. Private"
   echo "0. Exit"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-2]: " choice
 
   case "$choice" in
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     1) bash "$BASE_DIR/menus/work.sh" ;;
     2) bash "$BASE_DIR/menus/private.sh" ;;

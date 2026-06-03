@@ -7,21 +7,20 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$BASE_DIR/lib/ui.sh"
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Private Menu${NC}"
   echo
   echo -e "${YELLOW}Private menu is empty for now.${NC}"
   echo
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0]: " choice
 
   case "$choice" in
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     0) break ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;

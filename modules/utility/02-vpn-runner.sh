@@ -552,7 +552,6 @@ show_plan() {
 }
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Isolated VPN Config Runner${NC}"
   echo
@@ -566,14 +565,14 @@ while true; do
   echo "8. Show runner logs"
   echo "9. Remove runner only"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-9]: " choice
 
   case "$choice" in
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     1) show_plan ;;
     2) install_xray_local ;;

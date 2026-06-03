@@ -151,8 +151,7 @@ install_node() {
   case "$confirm" in
     y|Y|yes|YES)
       bash -c "$(curl -fsSL https://github.com/PasarGuard/scripts/raw/main/pg-node.sh)" @ install
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     *)
       echo -e "${YELLOW}Cancelled.${NC}"
       ;;
@@ -335,7 +334,6 @@ show_connection_info() {
 }
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}PasarGuard Node${NC}"
   echo
@@ -345,14 +343,14 @@ while true; do
   echo "4. Restart PasarGuard Node"
   echo "5. Show Node Connection Info"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-5]: " choice
 
   case "$choice" in
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     1) install_node ;;
     2) show_status ;;

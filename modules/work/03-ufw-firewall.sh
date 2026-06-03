@@ -615,7 +615,6 @@ enable_strict_ufw() {
 }
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}UFW Firewall${NC}"
   echo
@@ -626,14 +625,14 @@ while true; do
   echo "5. Disable UFW"
   echo "6. Enable strict UFW safely"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-6]: " choice
 
   case "$choice" in
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     1) show_status ;;
     2) allow_ssh_port ;;

@@ -142,14 +142,13 @@ install_basic_packages() {
 }
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Server Update & Basic Packages${NC}"
   echo
   echo "1. Show system info"
   echo "2. Update server and install basic packages"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-2]: " choice
@@ -165,10 +164,10 @@ while true; do
     0)
       break
       ;;    99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
 
 

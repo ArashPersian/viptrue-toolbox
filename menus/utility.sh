@@ -7,14 +7,13 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$BASE_DIR/lib/ui.sh"
 
 while true; do
-  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Utility Tools${NC}"
   echo
   echo "1. Server Factory-like Reset"
   echo "2. Temporary Tunnel / Proxy for Installations"
   echo "0. Back"
-  echo "99. Exit toolbox"
+  echo "99. Main Menu"
   echo
   line
   read -r -p "Enter your choice [0-2]: " choice
@@ -23,23 +22,21 @@ while true; do
     1)
       if [[ -f "$BASE_DIR/modules/utility/01-factory-reset.sh" ]]; then
         bash "$BASE_DIR/modules/utility/01-factory-reset.sh"
-        viptrue_should_exit_toolbox
-      else
+            else
         echo -e "${YELLOW}Server Factory-like Reset is not configured yet.${NC}"
         pause
       fi
       ;;
     2)
       bash "$BASE_DIR/modules/utility/02-temp-tunnel.sh"
-      viptrue_should_exit_toolbox
-      ;;
+          ;;
     0)
       break
       ;;    99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
     99)
-      viptrue_exit_toolbox
+      viptrue_main_menu
       ;;
 
 
