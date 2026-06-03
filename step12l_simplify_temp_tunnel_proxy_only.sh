@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_DIR="$HOME/viptrue-toolbox"
+cd "$PROJECT_DIR"
+
+cat > modules/utility/02-temp-tunnel.sh <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 export TOOLBOX_VERSION="${TOOLBOX_VERSION:-0.1.0}"
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -966,3 +973,12 @@ while true; do
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
 done
+EOF
+
+chmod +x modules/utility/02-temp-tunnel.sh
+bash -n modules/utility/02-temp-tunnel.sh
+
+echo
+echo "✅ Step 12L completed successfully."
+echo "Now run:"
+echo "git add . && git commit -m 'Simplify temp tunnel menu and disable risky TUN mode' && git push"
