@@ -20,23 +20,19 @@ pause() {
 title() {
   clear
   echo -e "${CYAN}"
-  echo " __      ___ ____ _______                  "
-  echo " \ \    / (_)  _ \__   __|                 "
-  echo "  \ \  / / _| |_) | | |_ __ _   _  ___     "
-  echo "   \ \/ / | |  __/  | | '__| | | |/ _ \    "
-  echo "    \  /  | | |     | | |  | |_| |  __/    "
-  echo "     \/   |_|_|     |_|_|   \__,_|\___|    "
+  cat <<'EOF'
+ __      ___ _____ _______             
+ \ \    / (_)  __ \__   __|            
+  \ \  / / _| |__) | | |_ __ _   _  ___ 
+   \ \/ / | |  ___/  | | '__| | | |/ _ \
+    \  /  | | |      | | |  | |_| |  __/
+     \/   |_|_|      |_|_|   \__,_|\___|
+EOF
   echo -e "${NC}"
-  echo -e "${WHITE}VIPTrue Server Toolbox${NC}"
-  echo -e "${GREEN}Version: ${TOOLBOX_VERSION:-0.1.0}${NC}"
+  echo "VIPTrue Server Toolbox"
+  echo -e "${GREEN}Version:${NC} $(viptrue_get_version)"
   line
 }
-
-
-
-
-
-
 
 # Backward compatibility for old handlers.
 
@@ -44,9 +40,11 @@ title() {
 viptrue_get_version() {
   local base_dir
   base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
   if [[ -f "$base_dir/VERSION" ]]; then
-    cat "$base_dir/VERSION" | tr -d '[:space:]'
+    tr -d '[:space:]' < "$base_dir/VERSION"
   else
     echo "${TOOLBOX_VERSION:-0.1.0}"
   fi
 }
+
