@@ -15,6 +15,7 @@ STATE_DIR="$TUNNEL_DIR/state"
 OUTBOUNDS_DIR="$TUNNEL_DIR/outbounds"
 
 SING_BOX_BIN="$BIN_DIR/sing-box"
+SINGBOX_ASSETS_DIR="$BASE_DIR/assets/sing-box"
 SERVICE_NAME="viptrue-temp-tunnel"
 
 RAW_LINKS_FILE="$OUTBOUNDS_DIR/single-links.txt"
@@ -172,9 +173,9 @@ install_singbox_isolated() {
   ensure_root || return
   ensure_dirs
 
-  local arch version asset url tmpdir extracted_dir version_choice
-
+  local arch version asset url tmpdir extracted_dir choice
   arch="$(detect_arch)"
+
   if [[ -z "$arch" ]]; then
     echo -e "${RED}Unsupported architecture:${NC} $(uname -m)"
     pause
@@ -183,81 +184,163 @@ install_singbox_isolated() {
 
   echo -e "${YELLOW}Detected architecture:${NC} $arch"
   echo
-  echo "1. Latest stable from GitHub releases"
-  echo "2. Custom version"
-  echo "0. Back"
-echo
-  read -r -p "Enter your choice [0-2,99]: " version_choice
 
-  case "$version_choice" in
-    1)
-      echo -e "${YELLOW}Fetching latest sing-box version...${NC}"
-      version="$(get_latest_singbox_version || true)"
-      ;;
-    2)
-      read -r -p "Enter version, example 1.13.12: " version
-      version="${version#v}"
-      ;;
-    0) return ;;
-    99) exit_toolbox ;;
-    *)
-      echo -e "${RED}Invalid choice.${NC}"
-      pause
-      return
-      ;;
-  esac
+  local cached_version=""
+  local cached_asset=""
 
-  if [[ -z "${version:-}" ]]; then
-    echo -e "${RED}Could not detect sing-box version.${NC}"
-    pause
-    return
+  if [[ -f "$SINGBOX_ASSETS_DIR/VERSION" ]]; then
+    cached_version="$(cat "$SINGBOX_ASSETS_DIR/VERSION" | tr -d '[:space:]')"
+    cached_asset="$SINGBOX_ASSETS_DIR/sing-box-${cached_version}-linux-${arch}.tar.gz"
   fi
 
-  asset="sing-box-${version}-linux-${arch}.tar.gz"
-  url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset}"
+  if [[ -n "$cached_version" && -f "$cached_asset" ]]; then
+    echo -e "${GREEN}Local cache found:${NC}"
+    echo "$cached_asset"
+    echo
+  else
+    echo -e "${YELLOW}No matching local cache found for arch:${NC} $arch"
+    echo
+  fi
 
+  echo "1. Smart install: local cache first, online latest fallback"
+  echo "2. Force install from local cache"
+  echo "3. Online install latest official release"
+  echo "4. Online install custom version"
+  echo "0. Back"
   echo
-  echo -e "${YELLOW}Install target:${NC}"
-  echo "$SING_BOX_BIN"
-  echo
-  echo -e "${YELLOW}Download URL:${NC}"
-  echo "$url"
-  echo
-  echo "This installs sing-box only inside:"
-  echo "$TUNNEL_DIR"
-  echo
-  read -r -p "Continue install/update? [y/N]: " confirm
+  read -r -p "Enter your choice [0-4]: " choice
 
-  case "$confirm" in
-    y|Y|yes|YES)
-      apt-get update
-      apt-get install -y curl tar gzip ca-certificates
+  install_from_cache_inner() {
+    local cv ca td ed
 
-      tmpdir="$(mktemp -d)"
-      curl -fL "$url" -o "$tmpdir/sing-box.tar.gz"
-      tar -xzf "$tmpdir/sing-box.tar.gz" -C "$tmpdir"
+    cv="$(cat "$SINGBOX_ASSETS_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+    ca="$SINGBOX_ASSETS_DIR/sing-box-${cv}-linux-${arch}.tar.gz"
 
-      extracted_dir="$(find "$tmpdir" -maxdepth 1 -type d -name "sing-box-${version}-linux-${arch}" | head -n 1)"
+    if [[ -z "$cv" || ! -f "$ca" ]]; then
+      echo -e "${RED}No valid local cache found.${NC}"
+      echo "Expected:"
+      echo "$ca"
+      return 1
+    fi
 
-      if [[ -z "$extracted_dir" || ! -f "$extracted_dir/sing-box" ]]; then
-        echo -e "${RED}sing-box binary not found after extraction.${NC}"
-        rm -rf "$tmpdir"
-        pause
-        return
-      fi
+    echo
+    echo -e "${YELLOW}Installing sing-box from local cache...${NC}"
+    echo "$ca"
 
-      cp "$extracted_dir/sing-box" "$SING_BOX_BIN"
-      chmod +x "$SING_BOX_BIN"
-      echo "$version" > "$STATE_DIR/sing-box.version"
+    mkdir -p "$BIN_DIR" "$STATE_DIR"
 
+    td="$(mktemp -d)"
+    tar -xzf "$ca" -C "$td"
+
+    ed="$(find "$td" -maxdepth 1 -type d -name "sing-box-${cv}-linux-${arch}" | head -n 1)"
+
+    if [[ -z "$ed" || ! -f "$ed/sing-box" ]]; then
+      echo -e "${RED}sing-box binary not found inside cached archive.${NC}"
+      rm -rf "$td"
+      return 1
+    fi
+
+    cp "$ed/sing-box" "$SING_BOX_BIN"
+    chmod +x "$SING_BOX_BIN"
+    echo "$cv" > "$STATE_DIR/sing-box.version"
+
+    rm -rf "$td"
+
+    echo
+    echo -e "${GREEN}sing-box installed from local cache.${NC}"
+    "$SING_BOX_BIN" version || true
+    return 0
+  }
+
+  install_online_inner() {
+    local mode="$1"
+
+    if [[ "$mode" == "latest" ]]; then
+      echo -e "${YELLOW}Fetching latest sing-box version...${NC}"
+      version="$(get_latest_singbox_version || true)"
+    else
+      read -r -p "Enter version, example 1.13.12: " version
+      version="${version#v}"
+    fi
+
+    if [[ -z "${version:-}" ]]; then
+      echo -e "${RED}Could not detect sing-box version.${NC}"
+      return 1
+    fi
+
+    asset="sing-box-${version}-linux-${arch}.tar.gz"
+    url="https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset}"
+
+    echo
+    echo -e "${YELLOW}Online download URL:${NC}"
+    echo "$url"
+    echo
+    echo "Install target:"
+    echo "$SING_BOX_BIN"
+    echo
+    read -r -p "Continue online install? [y/N]: " confirm
+
+    case "$confirm" in
+      y|Y|yes|YES) ;;
+      *)
+        echo -e "${YELLOW}Cancelled.${NC}"
+        return 1
+        ;;
+    esac
+
+    apt-get update
+    apt-get install -y curl tar gzip ca-certificates
+
+    tmpdir="$(mktemp -d)"
+    curl -fL "$url" -o "$tmpdir/sing-box.tar.gz"
+    tar -xzf "$tmpdir/sing-box.tar.gz" -C "$tmpdir"
+
+    extracted_dir="$(find "$tmpdir" -maxdepth 1 -type d -name "sing-box-${version}-linux-${arch}" | head -n 1)"
+
+    if [[ -z "$extracted_dir" || ! -f "$extracted_dir/sing-box" ]]; then
+      echo -e "${RED}sing-box binary not found after extraction.${NC}"
       rm -rf "$tmpdir"
+      return 1
+    fi
 
-      echo
-      echo -e "${GREEN}sing-box installed successfully.${NC}"
-      "$SING_BOX_BIN" version || true
+    mkdir -p "$BIN_DIR" "$STATE_DIR"
+    cp "$extracted_dir/sing-box" "$SING_BOX_BIN"
+    chmod +x "$SING_BOX_BIN"
+    echo "$version" > "$STATE_DIR/sing-box.version"
+
+    rm -rf "$tmpdir"
+
+    echo
+    echo -e "${GREEN}sing-box installed successfully from online release.${NC}"
+    "$SING_BOX_BIN" version || true
+    return 0
+  }
+
+  case "$choice" in
+    1)
+      if install_from_cache_inner; then
+        :
+      else
+        echo
+        echo -e "${YELLOW}Local cache failed or not available. Falling back to online latest.${NC}"
+        echo
+        install_online_inner latest || true
+      fi
+      ;;
+    2)
+      install_from_cache_inner || true
+      ;;
+    3)
+      install_online_inner latest || true
+      ;;
+    4)
+      install_online_inner custom || true
+      ;;
+    0)
+      return
       ;;
     *)
-      echo -e "${YELLOW}Cancelled.${NC}"
+      echo -e "${RED}Invalid choice.${NC}"
       ;;
   esac
 
