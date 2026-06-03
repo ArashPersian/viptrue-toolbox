@@ -1182,15 +1182,9 @@ config = {
             {
                 "type": "local",
                 "tag": "local"
-            },
-            {
-                "type": "udp",
-                "tag": "cf",
-                "server": "1.1.1.1",
-                "detour": "install-out"
             }
         ],
-        "final": "cf"
+        "final": "local"
     },
     "inbounds": [
         {
@@ -1225,6 +1219,14 @@ config = {
             "server": "local"
         },
         "rules": [
+            {
+                "port": 53,
+                "outbound": "direct"
+            },
+            {
+                "protocol": "dns",
+                "outbound": "direct"
+            },
             {
                 "action": "sniff"
             }
