@@ -718,6 +718,7 @@ ExecStart=${SING_BOX_BIN} run -c ${PROXY_CONFIG_FILE}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
+UnsetEnvironment=http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 
 [Install]
 WantedBy=multi-user.target
@@ -1260,6 +1261,7 @@ ExecStart=${SING_BOX_BIN} run -c ${TUN_CONFIG_FILE}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
+UnsetEnvironment=http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=false
@@ -1301,6 +1303,8 @@ start_tun_mode() {
   get_current_ssh_client_ip || true
   echo
 
+  show_proxy_env_warning
+
   read -r -p "Start TUN Mode now? [y/N]: " confirm
 
   case "$confirm" in
@@ -1332,7 +1336,7 @@ start_tun_mode() {
         echo
         echo -e "${YELLOW}Testing normal curl through TUN:${NC}"
         local direct_or_tun_ip
-        direct_or_tun_ip="$(curl -4fsS --connect-timeout 5 --max-time 15 https://api.ipify.org 2>/dev/null || true)"
+        direct_or_tun_ip="$(run_without_proxy_env curl -4fsS --connect-timeout 5 --max-time 15 https://api.ipify.org 2>/dev/null || true)"
         echo "${direct_or_tun_ip:-FAILED}"
         echo
 
@@ -1400,12 +1404,16 @@ tun_diagnostics() {
   cat /etc/resolv.conf 2>/dev/null || true
   echo
 
+  echo -e "${YELLOW}Current shell proxy environment:${NC}"
+  env | grep -Ei '^(http_proxy|https_proxy|all_proxy|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY)=' || echo "No proxy env variables found."
+  echo
+
   echo -e "${YELLOW}Test 1 - direct IP through current routing:${NC}"
-  curl -4fsS --connect-timeout 5 --max-time 10 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n '1,8p' || echo "FAILED"
+  run_without_proxy_env curl -4fsS --connect-timeout 5 --max-time 10 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n '1,8p' || echo "FAILED"
   echo
 
   echo -e "${YELLOW}Test 2 - domain through current routing:${NC}"
-  curl -4fsS --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || echo "FAILED"
+  run_without_proxy_env curl -4fsS --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || echo "FAILED"
   echo
 
   echo -e "${YELLOW}Test 3 - DNS resolve:${NC}"
@@ -1425,6 +1433,39 @@ tun_diagnostics() {
   echo
 
   pause
+}
+
+run_without_proxy_env() {
+  env \
+    -u http_proxy \
+    -u https_proxy \
+    -u all_proxy \
+    -u HTTP_PROXY \
+    -u HTTPS_PROXY \
+    -u ALL_PROXY \
+    "$@"
+}
+
+show_proxy_env_warning() {
+  local found=0
+
+  for var in http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; do
+    if [[ -n "${!var:-}" ]]; then
+      if [[ "$found" -eq 0 ]]; then
+        echo -e "${YELLOW}Detected proxy environment variables in current shell:${NC}"
+        found=1
+      fi
+      echo "$var=${!var}"
+    fi
+  done
+
+  if [[ "$found" -eq 1 ]]; then
+    echo
+    echo -e "${YELLOW}For TUN Mode tests, toolbox will ignore these variables automatically.${NC}"
+    echo "You can also clear them manually with:"
+    echo "unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY"
+    echo
+  fi
 }
 
 show_saved_links() {
