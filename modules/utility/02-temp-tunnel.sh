@@ -706,10 +706,75 @@ select_active_outbound() {
   fi
 
   echo
-  if ! python3 "$LINK_PROXY_TOOLS" activate \
-    --select-file "$select_file" \
-    --number "$selected" \
-    --active-file "$ACTIVE_LINK_FILE"; then
+  python3 - "$select_file" "$selected" "$ACTIVE_LINK_FILE" <<'PY2'
+import os
+import sys
+from pathlib import Path
+
+select_file = Path(sys.argv[1])
+selected = str(sys.argv[2])
+active_file = Path(sys.argv[3])
+
+row = None
+
+for line in select_file.read_text(errors="replace").splitlines():
+    parts = line.split("\t")
+    if parts and parts[0] == selected:
+        row = parts
+        break
+
+if row is None:
+    print("Selected item not found", file=sys.stderr)
+    raise SystemExit(1)
+
+while len(row) < 9:
+    row.append("")
+
+n, item_id, typ, source, sub_id, sub_name, link, delay_ms, test_status = row[:9]
+
+if not link.startswith(("ss://", "vless://", "trojan://", "vmess://")):
+    print("Selected row has invalid link field", file=sys.stderr)
+    print(f"link={link}", file=sys.stderr)
+    print("Raw row:", file=sys.stderr)
+    print(repr(row), file=sys.stderr)
+    raise SystemExit(1)
+
+active_file.parent.mkdir(parents=True, exist_ok=True)
+
+lines = [
+    f"id={item_id}",
+    f"type={typ}",
+    f"source={source}",
+]
+
+if sub_id:
+    lines.append(f"sub_id={sub_id}")
+
+if sub_name:
+    lines.append(f"sub_name={sub_name}")
+
+if delay_ms:
+    lines.append(f"delay_ms={delay_ms}")
+
+if test_status:
+    lines.append(f"test_status={test_status}")
+
+lines.append(f"link={link}")
+
+active_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+os.chmod(active_file, 0o600)
+
+print("Active outbound selected.")
+print(f"ID: {item_id}")
+print(f"Type: {typ}")
+print(f"Source: {source}")
+if delay_ms:
+    print(f"Real delay: {delay_ms} ms")
+else:
+    print(f"Test status: {test_status or 'N/A'}")
+PY2
+
+  if [[ "$?" -ne 0 ]]; then
     echo -e "${RED}Failed to activate selected outbound.${NC}"
     pause
     return
@@ -718,7 +783,7 @@ select_active_outbound() {
   echo
   echo -e "${GREEN}Active file saved correctly.${NC}"
   echo
-  echo "Now check active file if needed:"
+  echo "Check:"
   echo "cat -A $ACTIVE_LINK_FILE"
   echo
   echo "Then start:"
