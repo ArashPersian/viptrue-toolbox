@@ -13,6 +13,7 @@ while true; do
   echo -e "${YELLOW}Private menu is empty for now.${NC}"
   echo
   echo "0. Back"
+  echo "99. Exit toolbox"
   echo
   line
   read -r -p "Enter your choice [0]: " choice

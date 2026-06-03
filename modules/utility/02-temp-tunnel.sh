@@ -875,7 +875,10 @@ tun_experimental_menu() {
         ;;
       99)
         exit_toolbox
-        ;;
+        ;;    99)
+      viptrue_exit_toolbox
+      ;;
+
       *)
         echo -e "${RED}Invalid choice.${NC}"
         sleep 1

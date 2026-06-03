@@ -13,6 +13,7 @@ while true; do
   echo "1. Work"
   echo "2. Private"
   echo "0. Exit"
+  echo "99. Exit toolbox"
   echo
   line
   read -r -p "Enter your choice [0-2]: " choice

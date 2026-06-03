@@ -565,6 +565,7 @@ while true; do
   echo "8. Show runner logs"
   echo "9. Remove runner only"
   echo "0. Back"
+  echo "99. Exit toolbox"
   echo
   line
   read -r -p "Enter your choice [0-9]: " choice

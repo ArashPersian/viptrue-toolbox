@@ -651,6 +651,7 @@ while true; do
   echo "6. Close old SSH port in UFW"
   echo "7. SSH Doctor / Fix AWS Ubuntu SSH"
   echo "0. Back"
+  echo "99. Exit toolbox"
   echo
   line
   read -r -p "Enter your choice [0-7]: " choice
@@ -709,7 +710,10 @@ while true; do
       ;;
     0)
       break
+      ;;    99)
+      viptrue_exit_toolbox
       ;;
+
     *)
       echo -e "${RED}Invalid choice.${NC}"
       sleep 1

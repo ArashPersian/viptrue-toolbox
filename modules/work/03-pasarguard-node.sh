@@ -343,6 +343,7 @@ while true; do
   echo "4. Restart PasarGuard Node"
   echo "5. Show Node Connection Info"
   echo "0. Back"
+  echo "99. Exit toolbox"
   echo
   line
   read -r -p "Enter your choice [0-5]: " choice

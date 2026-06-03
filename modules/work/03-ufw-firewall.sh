@@ -625,6 +625,7 @@ while true; do
   echo "5. Disable UFW"
   echo "6. Enable strict UFW safely"
   echo "0. Back"
+  echo "99. Exit toolbox"
   echo
   line
   read -r -p "Enter your choice [0-6]: " choice

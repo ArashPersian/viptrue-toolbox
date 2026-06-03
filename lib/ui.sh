@@ -31,3 +31,9 @@ title() {
   echo -e "${GREEN}Version: ${TOOLBOX_VERSION:-0.1.0}${NC}"
   line
 }
+
+viptrue_exit_toolbox() {
+  clear
+  echo "Bye."
+  exit 0
+}
