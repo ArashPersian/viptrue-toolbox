@@ -11,7 +11,7 @@ while true; do
   echo -e "${CYAN}Utility Tools${NC}"
   echo
   echo "1. Server Factory-like Reset"
-  echo "2. Isolated VPN Config Runner"
+  echo "2. Temporary Tunnel / Proxy for Installations"
   echo "0. Back"
   echo
   line
@@ -19,10 +19,15 @@ while true; do
 
   case "$choice" in
     1)
-      bash "$BASE_DIR/modules/utility/01-factory-reset.sh"
+      if [[ -f "$BASE_DIR/modules/utility/01-factory-reset.sh" ]]; then
+        bash "$BASE_DIR/modules/utility/01-factory-reset.sh"
+      else
+        echo -e "${YELLOW}Server Factory-like Reset is not configured yet.${NC}"
+        pause
+      fi
       ;;
     2)
-      bash "$BASE_DIR/modules/utility/02-vpn-runner.sh"
+      bash "$BASE_DIR/modules/utility/02-temp-tunnel.sh"
       ;;
     0)
       break
