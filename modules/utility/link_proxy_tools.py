@@ -576,6 +576,31 @@ def cmd_select(args):
     return 0
 
 
+def cmd_generate(args):
+    link = args.link.strip()
+
+    if not link:
+        print("Empty link", file=sys.stderr)
+        return 1
+
+    try:
+        config = make_proxy_config(link, args.listen_port)
+    except Exception as e:
+        print(f"Failed to generate proxy config: {e}", file=sys.stderr)
+        return 1
+
+    # For real service logs, use info.
+    config["log"]["level"] = args.log_level
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    outbound = config["outbounds"][0]
+    print(f"Proxy config generated for {outbound.get('type')} server: {outbound.get('server')}:{outbound.get('server_port')}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -588,10 +613,19 @@ def main():
     p.add_argument("--test-count", type=int, default=50)
     p.add_argument("--timeout", type=int, default=9)
 
+    g = sub.add_parser("generate")
+    g.add_argument("--link", required=True)
+    g.add_argument("--out", required=True)
+    g.add_argument("--listen-port", type=int, default=19080)
+    g.add_argument("--log-level", default="info")
+
     args = parser.parse_args()
 
     if args.command == "select":
         return cmd_select(args)
+
+    if args.command == "generate":
+        return cmd_generate(args)
 
     return 1
 
