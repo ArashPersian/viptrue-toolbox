@@ -851,6 +851,29 @@ generate_proxy_config_from_active_link() {
     --log-level info
 }
 
+write_proxy_systemd_service() {
+  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF2
+[Unit]
+Description=VIPTrue Temporary Proxy for Installations
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${TUNNEL_DIR}
+ExecStart=${SING_BOX_BIN} run -c ${PROXY_CONFIG_FILE}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+UnsetEnvironment=http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+
+  systemctl daemon-reload
+}
+
 write_proxy_helpers() {
   ensure_dirs
 
