@@ -1196,8 +1196,10 @@ config = {
                 "172.19.0.1/30"
             ],
             "auto_route": True,
+            "auto_redirect": True,
             "strict_route": True,
-            "stack": "mixed"
+            "stack": "gvisor",
+            "endpoint_independent_nat": True
         }
     ],
     "outbounds": [
@@ -1334,9 +1336,15 @@ start_tun_mode() {
         echo
         echo -e "${GREEN}TUN Mode started successfully.${NC}"
         echo
+        echo -e "${YELLOW}Routing while TUN is active:${NC}"
+        ip route 2>/dev/null | sed -n '1,80p' || true
+        echo
+        ip rule 2>/dev/null || true
+        echo
+
         echo -e "${YELLOW}Testing normal curl through TUN:${NC}"
         local direct_or_tun_ip
-        direct_or_tun_ip="$(run_without_proxy_env curl -4fsS --connect-timeout 5 --max-time 15 https://api.ipify.org 2>/dev/null || true)"
+        direct_or_tun_ip="$(run_without_proxy_env curl -4fsS --connect-timeout 8 --max-time 25 https://api.ipify.org 2>/dev/null || true)"
         echo "${direct_or_tun_ip:-FAILED}"
         echo
 
