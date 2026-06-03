@@ -1180,14 +1180,14 @@ config = {
     "dns": {
         "servers": [
             {
+                "type": "local",
+                "tag": "local"
+            },
+            {
                 "type": "udp",
                 "tag": "cf",
                 "server": "1.1.1.1",
                 "detour": "install-out"
-            },
-            {
-                "type": "local",
-                "tag": "local"
             }
         ],
         "final": "cf"
@@ -1221,6 +1221,9 @@ config = {
     ],
     "route": {
         "auto_detect_interface": True,
+        "default_domain_resolver": {
+            "server": "local"
+        },
         "rules": [
             {
                 "action": "sniff"
