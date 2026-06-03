@@ -1202,8 +1202,7 @@ config = {
             ],
             "auto_route": True,
             "strict_route": True,
-            "stack": "mixed",
-            "sniff": True
+            "stack": "mixed"
         }
     ],
     "outbounds": [
@@ -1222,7 +1221,11 @@ config = {
     ],
     "route": {
         "auto_detect_interface": True,
-        "rules": direct_rules,
+        "rules": [
+            {
+                "action": "sniff"
+            }
+        ] + direct_rules,
         "final": "install-out"
     }
 }
