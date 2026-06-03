@@ -843,6 +843,7 @@ show_status_logs() {
 
 tun_experimental_menu() {
   while true; do
+  viptrue_should_exit_toolbox
     title
     echo -e "${CYAN}TUN Mode - Experimental / Disabled${NC}"
     line

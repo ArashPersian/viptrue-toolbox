@@ -552,6 +552,7 @@ show_plan() {
 }
 
 while true; do
+  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Isolated VPN Config Runner${NC}"
   echo

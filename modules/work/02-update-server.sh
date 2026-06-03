@@ -142,6 +142,7 @@ install_basic_packages() {
 }
 
 while true; do
+  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Server Update & Basic Packages${NC}"
   echo

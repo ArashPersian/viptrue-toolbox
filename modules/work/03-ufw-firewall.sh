@@ -615,6 +615,7 @@ enable_strict_ufw() {
 }
 
 while true; do
+  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}UFW Firewall${NC}"
   echo

@@ -360,6 +360,7 @@ full_factory_like_reset() {
 }
 
 while true; do
+  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}Server Factory-like Reset${NC}"
   echo

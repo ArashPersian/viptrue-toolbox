@@ -195,6 +195,7 @@ generate_random_port() {
   local port
 
   while true; do
+  viptrue_should_exit_toolbox
     port="$(shuf -i 20000-65000 -n 1)"
     if ! port_is_in_use "$port"; then
       echo "$port"

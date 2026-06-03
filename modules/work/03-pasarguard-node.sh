@@ -334,6 +334,7 @@ show_connection_info() {
 }
 
 while true; do
+  viptrue_should_exit_toolbox
   title
   echo -e "${CYAN}PasarGuard Node${NC}"
   echo
