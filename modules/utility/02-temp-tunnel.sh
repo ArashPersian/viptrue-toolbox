@@ -1180,13 +1180,14 @@ config = {
     "dns": {
         "servers": [
             {
+                "type": "udp",
                 "tag": "cf",
-                "address": "1.1.1.1",
+                "server": "1.1.1.1",
                 "detour": "install-out"
             },
             {
-                "tag": "local",
-                "address": "local"
+                "type": "local",
+                "tag": "local"
             }
         ],
         "final": "cf"
