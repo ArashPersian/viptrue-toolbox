@@ -1196,10 +1196,12 @@ config = {
                 "172.19.0.1/30"
             ],
             "auto_route": True,
-            "auto_redirect": True,
             "strict_route": True,
             "stack": "gvisor",
-            "endpoint_independent_nat": True
+            "route_address": [
+                "0.0.0.0/1",
+                "128.0.0.0/1"
+            ]
         }
     ],
     "outbounds": [
@@ -1337,9 +1339,17 @@ start_tun_mode() {
         echo -e "${GREEN}TUN Mode started successfully.${NC}"
         echo
         echo -e "${YELLOW}Routing while TUN is active:${NC}"
-        ip route 2>/dev/null | sed -n '1,80p' || true
+        echo "--- main table ---"
+        ip route 2>/dev/null | sed -n '1,120p' || true
         echo
+        echo "--- ip rules ---"
         ip rule 2>/dev/null || true
+        echo
+        echo "--- table 2022 ---"
+        ip route show table 2022 2>/dev/null || true
+        echo
+        echo "--- table 2023 ---"
+        ip route show table 2023 2>/dev/null || true
         echo
 
         echo -e "${YELLOW}Testing normal curl through TUN:${NC}"
