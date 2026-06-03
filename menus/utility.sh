@@ -23,6 +23,7 @@ while true; do
     1)
       if [[ -f "$BASE_DIR/modules/utility/01-factory-reset.sh" ]]; then
         bash "$BASE_DIR/modules/utility/01-factory-reset.sh"
+        viptrue_should_exit_toolbox
       else
         echo -e "${YELLOW}Server Factory-like Reset is not configured yet.${NC}"
         pause
@@ -30,6 +31,7 @@ while true; do
       ;;
     2)
       bash "$BASE_DIR/modules/utility/02-temp-tunnel.sh"
+      viptrue_should_exit_toolbox
       ;;
     0)
       break

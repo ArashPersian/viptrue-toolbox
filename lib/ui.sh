@@ -34,14 +34,11 @@ title() {
 
 
 
-# Global exit flag:
-# Submenus are often executed as child bash processes.
-# Plain "exit" only returns to the parent menu.
-# This flag lets all parent menus exit cleanly too.
-if [[ -z "${VIPTRUE_EXIT_FLAG:-}" ]]; then
-  export VIPTRUE_EXIT_FLAG="/tmp/viptrue_toolbox_exit_${USER:-root}_$$_$RANDOM"
-  rm -f "$VIPTRUE_EXIT_FLAG" 2>/dev/null || true
-fi
+
+
+# VIPTrue global exit flag.
+# Must be stable between parent and child menu processes.
+export VIPTRUE_EXIT_FLAG="${VIPTRUE_EXIT_FLAG:-/tmp/viptrue_toolbox_exit_${USER:-root}}"
 
 viptrue_exit_toolbox() {
   touch "$VIPTRUE_EXIT_FLAG" 2>/dev/null || true

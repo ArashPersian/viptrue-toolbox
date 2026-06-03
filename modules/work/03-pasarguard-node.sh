@@ -151,6 +151,7 @@ install_node() {
   case "$confirm" in
     y|Y|yes|YES)
       bash -c "$(curl -fsSL https://github.com/PasarGuard/scripts/raw/main/pg-node.sh)" @ install
+      viptrue_should_exit_toolbox
       ;;
     *)
       echo -e "${YELLOW}Cancelled.${NC}"

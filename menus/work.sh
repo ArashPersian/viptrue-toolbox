@@ -25,18 +25,23 @@ while true; do
   case "$choice" in
     1)
       bash "$BASE_DIR/modules/work/01-root-ssh.sh"
+      viptrue_should_exit_toolbox
       ;;
     2)
       bash "$BASE_DIR/modules/work/02-update-server.sh"
+      viptrue_should_exit_toolbox
       ;;
     3)
       bash "$BASE_DIR/modules/work/03-ufw-firewall.sh"
+      viptrue_should_exit_toolbox
       ;;
     4)
       bash "$BASE_DIR/modules/work/03-pasarguard-node.sh"
+      viptrue_should_exit_toolbox
       ;;
     5)
       bash "$BASE_DIR/menus/utility.sh"
+      viptrue_should_exit_toolbox
       ;;
     0)
       break
