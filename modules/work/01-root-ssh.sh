@@ -651,8 +651,7 @@ while true; do
   echo "6. Close old SSH port in UFW"
   echo "7. SSH Doctor / Fix AWS Ubuntu SSH"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-7]: " choice
 
@@ -713,12 +712,7 @@ while true; do
       ;;    99)
       viptrue_main_menu
       ;;
-    99)
-      viptrue_main_menu
-      ;;
-
-
-    *)
+*)
       echo -e "${RED}Invalid choice.${NC}"
       sleep 1
       ;;

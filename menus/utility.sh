@@ -13,8 +13,7 @@ while true; do
   echo "1. Server Factory-like Reset"
   echo "2. Temporary Tunnel / Proxy for Installations"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-2]: " choice
 
@@ -35,12 +34,7 @@ while true; do
       ;;    99)
       viptrue_main_menu
       ;;
-    99)
-      viptrue_main_menu
-      ;;
-
-
-    *)
+*)
       echo -e "${RED}Invalid choice.${NC}"
       sleep 1
       ;;

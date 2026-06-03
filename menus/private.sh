@@ -13,16 +13,12 @@ while true; do
   echo -e "${YELLOW}Private menu is empty for now.${NC}"
   echo
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0]: " choice
 
   case "$choice" in
-    99)
-      viptrue_main_menu
-      ;;
-    0) break ;;
+0) break ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
 done

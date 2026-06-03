@@ -16,8 +16,7 @@ while true; do
   echo "4. PasarGuard Node"
   echo "5. Utility Tools"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-5]: " choice
 
@@ -42,12 +41,7 @@ while true; do
       ;;    99)
       viptrue_main_menu
       ;;
-    99)
-      viptrue_main_menu
-      ;;
-
-
-    *)
+*)
       echo -e "${RED}Invalid choice.${NC}"
       sleep 1
       ;;

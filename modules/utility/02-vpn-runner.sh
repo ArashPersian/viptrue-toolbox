@@ -565,16 +565,12 @@ while true; do
   echo "8. Show runner logs"
   echo "9. Remove runner only"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-9]: " choice
 
   case "$choice" in
-    99)
-      viptrue_main_menu
-      ;;
-    1) show_plan ;;
+1) show_plan ;;
     2) install_xray_local ;;
     3) import_xray_config ;;
     4) validate_xray_config ;;

@@ -38,16 +38,4 @@ title() {
 
 
 
-viptrue_main_menu() {
-  clear
-  exit 0
-}
-
 # Backward compatibility for old handlers.
-viptrue_exit_toolbox() {
-  viptrue_main_menu
-}
-
-viptrue_should_exit_toolbox() {
-  true
-}

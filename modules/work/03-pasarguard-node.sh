@@ -343,16 +343,12 @@ while true; do
   echo "4. Restart PasarGuard Node"
   echo "5. Show Node Connection Info"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-5]: " choice
 
   case "$choice" in
-    99)
-      viptrue_main_menu
-      ;;
-    1) install_node ;;
+1) install_node ;;
     2) show_status ;;
     3) show_logs ;;
     4) restart_node ;;

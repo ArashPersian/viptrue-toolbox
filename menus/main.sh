@@ -13,16 +13,12 @@ while true; do
   echo "1. Work"
   echo "2. Private"
   echo "0. Exit"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-2]: " choice
 
   case "$choice" in
-    99)
-      viptrue_main_menu
-      ;;
-    1) bash "$BASE_DIR/menus/work.sh" ;;
+1) bash "$BASE_DIR/menus/work.sh" ;;
     2) bash "$BASE_DIR/menus/private.sh" ;;
     0) echo "Bye."; exit 0 ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;

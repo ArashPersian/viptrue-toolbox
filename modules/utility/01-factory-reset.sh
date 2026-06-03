@@ -369,16 +369,12 @@ while true; do
   echo "4. Reset VPN stack"
   echo "5. Full factory-like reset - dangerous"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-5]: " choice
 
   case "$choice" in
-    99)
-      viptrue_main_menu
-      ;;
-    1) show_reset_plan ;;
+1) show_reset_plan ;;
     2) dry_run_scan ;;
     3) soft_cleanup ;;
     4) reset_vpn_stack ;;

@@ -148,8 +148,7 @@ while true; do
   echo "1. Show system info"
   echo "2. Update server and install basic packages"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-2]: " choice
 
@@ -166,12 +165,7 @@ while true; do
       ;;    99)
       viptrue_main_menu
       ;;
-    99)
-      viptrue_main_menu
-      ;;
-
-
-    *)
+*)
       echo -e "${RED}Invalid choice.${NC}"
       sleep 1
       ;;

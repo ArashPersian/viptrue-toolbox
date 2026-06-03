@@ -625,16 +625,12 @@ while true; do
   echo "5. Disable UFW"
   echo "6. Enable strict UFW safely"
   echo "0. Back"
-  echo "99. Main Menu"
-  echo
+echo
   line
   read -r -p "Enter your choice [0-6]: " choice
 
   case "$choice" in
-    99)
-      viptrue_main_menu
-      ;;
-    1) show_status ;;
+1) show_status ;;
     2) allow_ssh_port ;;
     3) manage_detected_ports ;;
     4) custom_port_rules ;;
