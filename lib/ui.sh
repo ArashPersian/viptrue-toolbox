@@ -39,3 +39,14 @@ title() {
 
 
 # Backward compatibility for old handlers.
+
+
+viptrue_get_version() {
+  local base_dir
+  base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  if [[ -f "$base_dir/VERSION" ]]; then
+    cat "$base_dir/VERSION" | tr -d '[:space:]'
+  else
+    echo "${TOOLBOX_VERSION:-0.1.0}"
+  fi
+}

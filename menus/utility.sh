@@ -12,10 +12,11 @@ while true; do
   echo
   echo "1. Server Factory-like Reset"
   echo "2. Temporary Tunnel / Proxy for Installations"
+  echo "3. Offline Assets / Local Installer"
   echo "0. Back"
 echo
   line
-  read -r -p "Enter your choice [0-2]: " choice
+  read -r -p "Enter your choice [0-3]: " choice
 
   case "$choice" in
     1)
