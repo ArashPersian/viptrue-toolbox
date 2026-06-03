@@ -631,6 +631,9 @@ while true; do
   read -r -p "Enter your choice [0-6]: " choice
 
   case "$choice" in
+    99)
+      viptrue_exit_toolbox
+      ;;
     1) show_status ;;
     2) allow_ssh_port ;;
     3) manage_detected_ports ;;

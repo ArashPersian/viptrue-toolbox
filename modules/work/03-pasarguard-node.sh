@@ -349,6 +349,9 @@ while true; do
   read -r -p "Enter your choice [0-5]: " choice
 
   case "$choice" in
+    99)
+      viptrue_exit_toolbox
+      ;;
     1) install_node ;;
     2) show_status ;;
     3) show_logs ;;

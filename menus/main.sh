@@ -19,6 +19,9 @@ while true; do
   read -r -p "Enter your choice [0-2]: " choice
 
   case "$choice" in
+    99)
+      viptrue_exit_toolbox
+      ;;
     1) bash "$BASE_DIR/menus/work.sh" ;;
     2) bash "$BASE_DIR/menus/private.sh" ;;
     0) echo "Bye."; exit 0 ;;

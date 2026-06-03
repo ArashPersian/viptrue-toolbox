@@ -713,6 +713,10 @@ while true; do
       ;;    99)
       viptrue_exit_toolbox
       ;;
+    99)
+      viptrue_exit_toolbox
+      ;;
+
 
     *)
       echo -e "${RED}Invalid choice.${NC}"

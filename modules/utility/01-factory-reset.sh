@@ -375,6 +375,9 @@ while true; do
   read -r -p "Enter your choice [0-5]: " choice
 
   case "$choice" in
+    99)
+      viptrue_exit_toolbox
+      ;;
     1) show_reset_plan ;;
     2) dry_run_scan ;;
     3) soft_cleanup ;;

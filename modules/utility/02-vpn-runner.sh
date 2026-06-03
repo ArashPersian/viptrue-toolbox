@@ -571,6 +571,9 @@ while true; do
   read -r -p "Enter your choice [0-9]: " choice
 
   case "$choice" in
+    99)
+      viptrue_exit_toolbox
+      ;;
     1) show_plan ;;
     2) install_xray_local ;;
     3) import_xray_config ;;

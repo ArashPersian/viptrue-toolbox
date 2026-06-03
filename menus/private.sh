@@ -19,6 +19,9 @@ while true; do
   read -r -p "Enter your choice [0]: " choice
 
   case "$choice" in
+    99)
+      viptrue_exit_toolbox
+      ;;
     0) break ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
