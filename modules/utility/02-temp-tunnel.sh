@@ -1330,9 +1330,19 @@ start_tun_mode() {
         echo
         echo -e "${YELLOW}Testing normal curl through TUN:${NC}"
         local direct_or_tun_ip
-        direct_or_tun_ip="$(curl -4fsS --max-time 15 https://api.ipify.org 2>/dev/null || true)"
+        direct_or_tun_ip="$(curl -4fsS --connect-timeout 5 --max-time 15 https://api.ipify.org 2>/dev/null || true)"
         echo "${direct_or_tun_ip:-FAILED}"
         echo
+
+        if [[ -z "${direct_or_tun_ip:-}" ]]; then
+          echo -e "${RED}TUN curl test failed. Auto-stopping TUN to keep server safe.${NC}"
+          systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+          echo
+          echo "Run option 14. TUN Diagnostics to inspect the reason."
+          pause
+          return
+        fi
+
         echo "Now commands like these should use the tunnel automatically:"
         echo "apt update"
         echo "curl https://api.ipify.org"
@@ -1354,6 +1364,63 @@ start_tun_mode() {
       echo -e "${YELLOW}Cancelled.${NC}"
       ;;
   esac
+
+  pause
+}
+
+tun_diagnostics() {
+  title
+  echo -e "${CYAN}TUN Diagnostics${NC}"
+  line
+  echo
+
+  echo -e "${YELLOW}Service status:${NC}"
+  systemctl status "$SERVICE_NAME" --no-pager 2>/dev/null || true
+  echo
+
+  echo -e "${YELLOW}Recent service logs:${NC}"
+  journalctl -u "$SERVICE_NAME" -n 120 --no-pager 2>/dev/null || true
+  echo
+
+  echo -e "${YELLOW}Interfaces:${NC}"
+  ip addr show 2>/dev/null | sed -n '1,160p' || true
+  echo
+
+  echo -e "${YELLOW}Routes:${NC}"
+  ip route 2>/dev/null || true
+  echo
+
+  echo -e "${YELLOW}Rules:${NC}"
+  ip rule 2>/dev/null || true
+  echo
+
+  echo -e "${YELLOW}DNS / resolv.conf:${NC}"
+  cat /etc/resolv.conf 2>/dev/null || true
+  echo
+
+  echo -e "${YELLOW}Test 1 - direct IP through current routing:${NC}"
+  curl -4fsS --connect-timeout 5 --max-time 10 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n '1,8p' || echo "FAILED"
+  echo
+
+  echo -e "${YELLOW}Test 2 - domain through current routing:${NC}"
+  curl -4fsS --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || echo "FAILED"
+  echo
+
+  echo -e "${YELLOW}Test 3 - DNS resolve:${NC}"
+  getent hosts api.ipify.org 2>/dev/null || echo "FAILED"
+  echo
+
+  echo -e "${YELLOW}Active TUN config path:${NC}"
+  echo "$TUN_CONFIG_FILE"
+  echo
+
+  if [[ -f "$TUN_CONFIG_FILE" ]]; then
+    echo -e "${YELLOW}TUN config preview without password:${NC}"
+    sed -E 's/"password": ".*"/"password": "***"/g' "$TUN_CONFIG_FILE" | sed -n '1,220p'
+  else
+    echo "TUN config not found."
+  fi
+  echo
 
   pause
 }
@@ -1531,10 +1598,11 @@ while true; do
   echo "11. Show status/logs"
   echo "12. Relay test active link"
   echo "13. Open proxied shell"
+  echo "14. TUN Diagnostics"
   echo "0. Back"
   echo
   line
-  read -r -p "Enter your choice [0-13]: " choice
+  read -r -p "Enter your choice [0-14]: " choice
 
   case "$choice" in
     1)
@@ -1575,6 +1643,9 @@ while true; do
       ;;
     13)
       open_proxied_shell
+      ;;
+    14)
+      tun_diagnostics
       ;;
     0)
       break
