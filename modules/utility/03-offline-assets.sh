@@ -226,15 +226,22 @@ build_offline_bundle() {
 
   mkdir -p "$ASSETS_DIR"
 
-  local bundle_name
-  bundle_name="viptrue-offline-assets-$(cat "$BASE_DIR/VERSION" 2>/dev/null || echo 0.1.0).tar.gz"
+  local version bundle_name
+  version="$(cat "$BASE_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  version="${version:-0.1.3}"
+
+  bundle_name="viptrue-offline-assets-${version}.tar.gz"
+
+  # Store asset bundle version INSIDE assets, not root VERSION.
+  # This prevents offline bundle import from downgrading toolbox VERSION.
+  echo "$version" > "$ASSETS_DIR/OFFLINE_BUNDLE_VERSION"
 
   echo "This will create:"
   echo "$BASE_DIR/$bundle_name"
   echo
   echo "Included:"
   echo "- assets/sing-box/"
-  echo "- VERSION"
+  echo "- assets/OFFLINE_BUNDLE_VERSION"
   echo
   read -r -p "Build bundle? [y/N]: " confirm
 
@@ -249,8 +256,8 @@ build_offline_bundle() {
 
   tar -czf "$BASE_DIR/$bundle_name" \
     -C "$BASE_DIR" \
-    VERSION \
-    assets/sing-box
+    assets/sing-box \
+    assets/OFFLINE_BUNDLE_VERSION
 
   echo
   echo -e "${GREEN}Bundle created:${NC}"
@@ -354,10 +361,27 @@ import_offline_bundle_file() {
 
   mkdir -p "$BASE_DIR/assets"
 
-  tar -xzf "$bundle_path" -C "$BASE_DIR"
+  # Important:
+  # Bundle must not overwrite root VERSION.
+  # If an old bundle contains VERSION, extract it to temp first and only copy assets.
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  tar -xzf "$bundle_path" -C "$tmpdir"
+
+  if [[ -d "$tmpdir/assets" ]]; then
+    cp -a "$tmpdir/assets/." "$BASE_DIR/assets/"
+  else
+    echo -e "${RED}Invalid bundle: assets directory not found.${NC}"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  rm -rf "$tmpdir"
 
   echo
   echo -e "${GREEN}Bundle imported successfully.${NC}"
+  echo "Toolbox VERSION was not overwritten."
   echo
 
   show_cached_assets
