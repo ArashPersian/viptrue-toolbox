@@ -30,6 +30,9 @@ echo
     2)
       bash "$BASE_DIR/modules/utility/02-temp-tunnel.sh"
           ;;
+    3)
+      bash "$BASE_DIR/modules/utility/03-offline-assets.sh"
+      ;;
     0)
       break
       ;;    99)
