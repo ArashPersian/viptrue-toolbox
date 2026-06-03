@@ -275,6 +275,7 @@ add_single_config_link() {
   echo "Currently fully supported for proxy test/start:"
   echo "- ss:// Shadowsocks"
   echo "- vless:// VLESS"
+  echo "- trojan:// Trojan"
   echo
   echo "Stored/planned:"
   echo "- vless:// vmess:// trojan:// hysteria2:// tuic:// wireguard://"
@@ -386,11 +387,11 @@ generate_proxy_config_from_active_link() {
   link_type="$(get_active_link_type || true)"
   link="$(get_active_link_value || true)"
 
-  if [[ "$link_type" != "shadowsocks" && "$link_type" != "vless" ]]; then
-    echo -e "${RED}Proxy Mode currently supports ss:// and vless:// links.${NC}"
+  if [[ "$link_type" != "shadowsocks" && "$link_type" != "vless" && "$link_type" != "trojan" ]]; then
+    echo -e "${RED}Proxy Mode currently supports ss://, vless:// and trojan:// links.${NC}"
     echo "Active type: ${link_type:-UNKNOWN}"
     echo
-    echo "Next steps: VMess / Trojan / Subscription."
+    echo "Next steps: VMess / Subscription."
     return 1
   fi
 
@@ -417,6 +418,97 @@ def first(q, *keys, default=""):
 
 def is_true(value: str) -> bool:
     return str(value).lower() in ("1", "true", "yes", "y")
+
+def build_tls(q, security):
+    security = (security or "none").lower()
+
+    if security not in ("tls", "reality"):
+        return None
+
+    tls = {
+        "enabled": True
+    }
+
+    sni = first(q, "sni", "serverName", "servername", "peer")
+    if sni:
+        tls["server_name"] = sni
+
+    if is_true(first(q, "allowInsecure", "insecure", "skip-cert-verify")):
+        tls["insecure"] = True
+
+    fp = first(q, "fp", "fingerprint")
+    if fp and fp.lower() != "none":
+        tls["utls"] = {
+            "enabled": True,
+            "fingerprint": fp
+        }
+
+    if security == "reality":
+        pbk = first(q, "pbk", "publicKey", "public_key")
+        sid = first(q, "sid", "shortId", "short_id")
+
+        reality = {
+            "enabled": True
+        }
+
+        if pbk:
+            reality["public_key"] = pbk
+
+        if sid:
+            reality["short_id"] = sid
+
+        tls["reality"] = reality
+
+    return tls
+
+def build_transport(q):
+    transport_type = first(q, "type", default="tcp").lower()
+
+    if transport_type in ("ws", "websocket"):
+        host = first(q, "host")
+        path = first(q, "path", default="/")
+
+        transport = {
+            "type": "ws",
+            "path": path
+        }
+
+        if host:
+            transport["headers"] = {
+                "Host": host.split(",")[0]
+            }
+
+        return transport
+
+    if transport_type == "grpc":
+        service_name = first(q, "serviceName", "service_name", "path")
+
+        transport = {
+            "type": "grpc"
+        }
+
+        if service_name:
+            transport["service_name"] = service_name.lstrip("/")
+
+        return transport
+
+    if transport_type in ("httpupgrade", "http_upgrade"):
+        host = first(q, "host")
+        path = first(q, "path", default="/")
+
+        transport = {
+            "type": "httpupgrade",
+            "path": path
+        }
+
+        if host:
+            transport["headers"] = {
+                "Host": host.split(",")[0]
+            }
+
+        return transport
+
+    return None
 
 def parse_ss(uri: str):
     raw = uri[5:]
@@ -497,94 +589,45 @@ def parse_vless(uri: str):
 
     security = first(q, "security", default="none").lower()
 
-    if security in ("tls", "reality"):
-        tls = {
-            "enabled": True
-        }
-
-        sni = first(q, "sni", "serverName", "servername", "peer")
-        if sni:
-            tls["server_name"] = sni
-
-        if is_true(first(q, "allowInsecure", "insecure", "skip-cert-verify")):
-            tls["insecure"] = True
-
-        fp = first(q, "fp", "fingerprint")
-        if fp and fp.lower() != "none":
-            tls["utls"] = {
-                "enabled": True,
-                "fingerprint": fp
-            }
-
-        if security == "reality":
-            pbk = first(q, "pbk", "publicKey", "public_key")
-            sid = first(q, "sid", "shortId", "short_id")
-
-            reality = {
-                "enabled": True
-            }
-
-            if pbk:
-                reality["public_key"] = pbk
-
-            if sid:
-                reality["short_id"] = sid
-
-            tls["reality"] = reality
-
+    tls = build_tls(q, security)
+    if tls:
         outbound["tls"] = tls
 
-    transport_type = first(q, "type", default="tcp").lower()
-
-    if transport_type in ("ws", "websocket"):
-        host = first(q, "host")
-        path = first(q, "path", default="/")
-
-        transport = {
-            "type": "ws",
-            "path": path
-        }
-
-        if host:
-            transport["headers"] = {
-                "Host": host.split(",")[0]
-            }
-
+    transport = build_transport(q)
+    if transport:
         outbound["transport"] = transport
 
-    elif transport_type == "grpc":
-        service_name = first(q, "serviceName", "service_name", "path")
+    return outbound
 
-        transport = {
-            "type": "grpc"
-        }
+def parse_trojan(uri: str):
+    u = urlparse(uri)
+    q = parse_qs(u.query)
 
-        if service_name:
-            transport["service_name"] = service_name.lstrip("/")
+    password = unquote(u.username or "")
+    server = u.hostname or ""
+    port = u.port or 443
 
+    if not password or not server:
+        raise ValueError("Invalid Trojan link: missing password or server")
+
+    outbound = {
+        "type": "trojan",
+        "tag": "install-out",
+        "server": server,
+        "server_port": int(port),
+        "password": password,
+        "network": "tcp"
+    }
+
+    security = first(q, "security", default="tls").lower()
+
+    tls = build_tls(q, security)
+    if tls:
+        outbound["tls"] = tls
+
+    transport = build_transport(q)
+    if transport:
         outbound["transport"] = transport
-
-    elif transport_type in ("httpupgrade", "http_upgrade"):
-        host = first(q, "host")
-        path = first(q, "path", default="/")
-
-        transport = {
-            "type": "httpupgrade",
-            "path": path
-        }
-
-        if host:
-            transport["headers"] = {
-                "Host": host.split(",")[0]
-            }
-
-        outbound["transport"] = transport
-
-    elif transport_type in ("tcp", "raw", "none"):
-        pass
-    else:
-        # Unknown transport: keep base VLESS outbound and let sing-box check decide.
-        pass
 
     return outbound
 
@@ -592,6 +635,8 @@ if link.startswith("ss://"):
     proxy_outbound = parse_ss(link)
 elif link.startswith("vless://"):
     proxy_outbound = parse_vless(link)
+elif link.startswith("trojan://"):
+    proxy_outbound = parse_trojan(link)
 else:
     raise ValueError("Unsupported link type for proxy mode")
 
