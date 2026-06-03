@@ -25,6 +25,7 @@ PROXY_CONFIG_FILE="$CONFIG_DIR/proxy-mode.json"
 PROXY_ENV_FILE="$STATE_DIR/proxy-env.sh"
 PROXY_SHELL_BIN="/usr/local/bin/viptrue-proxy-shell"
 PROXY_RUN_BIN="/usr/local/bin/viptrue-proxy-run"
+LINK_PROXY_TOOLS="$BASE_DIR/modules/utility/link_proxy_tools.py"
 
 exit_toolbox() {
   clear
@@ -640,97 +641,54 @@ PY3
 
 select_active_outbound() {
   title
-  echo -e "${CYAN}Select Active Outbound${NC}"
+  echo -e "${CYAN}Select Active Outbound - Auto Real Delay Sort${NC}"
   line
   echo
 
   ensure_root || return
   ensure_dirs
 
+  if [[ ! -x "$SING_BOX_BIN" ]]; then
+    echo -e "${RED}sing-box is not installed.${NC}"
+    echo "Run Install / Update sing-box first."
+    pause
+    return
+  fi
+
+  if [[ ! -f "$LINK_PROXY_TOOLS" ]]; then
+    echo -e "${RED}Helper not found:${NC}"
+    echo "$LINK_PROXY_TOOLS"
+    pause
+    return
+  fi
+
   local select_file
   select_file="$STATE_DIR/selectable-outbounds.tsv"
 
-  python3 - "$RAW_LINKS_FILE" "$SUB_OUTBOUNDS_FILE" "$select_file" <<'PY2'
-import sys, re
-from pathlib import Path
-from urllib.parse import urlparse
+  echo "This will test configs with real HTTP delay through sing-box local proxy,"
+  echo "then sort them like v2rayN real delay results."
+  echo
+  echo "Recommended:"
+  echo "- 30 or 50 for fast test"
+  echo "- 0 to test ALL configs"
+  echo
+  read -r -p "How many configs should be tested? [default: 50, 0 = all]: " test_count
+  test_count="${test_count:-50}"
 
-raw_file = Path(sys.argv[1])
-sub_file = Path(sys.argv[2])
-select_file = Path(sys.argv[3])
+  if ! [[ "$test_count" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Invalid number.${NC}"
+    pause
+    return
+  fi
 
-def mask_link(link: str) -> str:
-    masked = re.sub(r'(://)[^:@/]+:[^@/]+@', r'\1***:***@', link)
-    masked = re.sub(r'(password=)[^&]+', r'\1***', masked, flags=re.I)
-    masked = re.sub(r'(uuid=)[^&]+', r'\1***', masked, flags=re.I)
-    masked = re.sub(r'(id=)[^&]+', r'\1***', masked, flags=re.I)
-    if masked.startswith(("vless://", "trojan://")):
-        try:
-            p = urlparse(masked)
-            if p.username:
-                masked = masked.replace(p.username, "***", 1)
-        except Exception:
-            pass
-    return masked[:160]
-
-def parse_blocks(path: Path):
-    if not path.exists():
-        return []
-    blocks = []
-    current = {}
-    for line in path.read_text(errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            if current:
-                blocks.append(current)
-            current = {"id": line[1:-1]}
-        elif "=" in line and current is not None:
-            k, v = line.split("=", 1)
-            current[k.strip()] = v.strip()
-    if current:
-        blocks.append(current)
-    return blocks
-
-items = []
-
-for b in parse_blocks(raw_file):
-    if b.get("link") and b.get("type"):
-        b["source"] = "single"
-        items.append(b)
-
-for b in parse_blocks(sub_file):
-    if b.get("link") and b.get("type"):
-        b["source"] = "subscription"
-        items.append(b)
-
-if not items:
-    print("NO_ITEMS")
-    select_file.write_text("")
-    raise SystemExit
-
-lines = []
-for i, b in enumerate(items, 1):
-    source = b.get("source", "")
-    typ = b.get("type", "unknown")
-    item_id = b.get("id", "")
-    sub_name = b.get("sub_name", "")
-    link = b.get("link", "")
-
-    label = f"{i}. [{source}] [{typ}] [{item_id}]"
-    if sub_name:
-        label += f" {sub_name}"
-    print(label)
-    print(f"   {mask_link(link)}")
-    print()
-
-    lines.append(
-        f"{i}\t{b.get('id','')}\t{b.get('type','')}\t{b.get('source','')}\t{b.get('sub_id','')}\t{b.get('sub_name','')}\t{b.get('link','')}"
-    )
-
-select_file.write_text("\n".join(lines) + "\n")
-PY2
+  echo
+  python3 "$LINK_PROXY_TOOLS" select \
+    --raw "$RAW_LINKS_FILE" \
+    --sub "$SUB_OUTBOUNDS_FILE" \
+    --out "$select_file" \
+    --sing-box "$SING_BOX_BIN" \
+    --test-count "$test_count" \
+    --timeout 9
 
   if [[ ! -s "$select_file" ]]; then
     echo -e "${YELLOW}No outbound found.${NC}"
@@ -739,7 +697,7 @@ PY2
     return
   fi
 
-  read -r -p "Select number: " selected
+  read -r -p "Select number from sorted list: " selected
 
   if ! [[ "$selected" =~ ^[0-9]+$ ]]; then
     echo -e "${RED}Invalid number.${NC}"
@@ -748,7 +706,7 @@ PY2
   fi
 
   local row
-  row="$(awk -F'\t' -v n="$selected" '$1 == n {print; exit}' "$select_file" || true)"
+  row="$(awk -F'	' -v n="$selected" '$1 == n {print; exit}' "$select_file" || true)"
 
   if [[ -z "$row" ]]; then
     echo -e "${RED}Selected item not found.${NC}"
@@ -756,8 +714,8 @@ PY2
     return
   fi
 
-  local n id typ source sub_id sub_name link
-  IFS=$'\t' read -r n id typ source sub_id sub_name link <<< "$row"
+  local n id typ source sub_id sub_name link delay_ms test_status
+  IFS=$'	' read -r n id typ source sub_id sub_name link delay_ms test_status <<< "$row"
 
   {
     echo "id=$id"
@@ -765,6 +723,8 @@ PY2
     echo "source=$source"
     [[ -n "$sub_id" ]] && echo "sub_id=$sub_id"
     [[ -n "$sub_name" ]] && echo "sub_name=$sub_name"
+    [[ -n "$delay_ms" ]] && echo "delay_ms=$delay_ms"
+    [[ -n "$test_status" ]] && echo "test_status=$test_status"
     echo "link=$link"
   } > "$ACTIVE_LINK_FILE"
 
@@ -775,10 +735,19 @@ PY2
   echo "ID: $id"
   echo "Type: $typ"
   echo "Source: $source"
+  if [[ -n "$delay_ms" ]]; then
+    echo "Real delay: ${delay_ms} ms"
+  else
+    echo "Test status: ${test_status:-N/A}"
+  fi
+  echo
+  echo "Now you can start Proxy Mode directly:"
+  echo "Proxy Mode > Start Proxy Mode"
   echo
 
   pause
 }
+
 
 generate_proxy_config_from_active_link() {
   ensure_dirs
@@ -1588,12 +1557,11 @@ config_links_menu() {
     echo "1. Add single config link"
     echo "2. Add subscription link"
     echo "3. Update subscriptions"
-    echo "4. Select active outbound"
+    echo "4. Select active outbound + auto real delay sort"
     echo "5. Show saved links"
-    echo "6. Relay test active link"
     echo "0. Back"
     echo
-    read -r -p "Enter your choice [0-6]: " choice
+    read -r -p "Enter your choice [0-5]: " choice
 
     case "$choice" in
       1) add_single_config_link ;;
@@ -1601,12 +1569,12 @@ config_links_menu() {
       3) update_subscriptions ;;
       4) select_active_outbound ;;
       5) show_saved_links ;;
-      6) relay_test_active_link ;;
       0) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
   done
 }
+
 
 proxy_mode_menu() {
   while true; do
