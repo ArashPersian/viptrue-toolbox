@@ -1,6 +1,66 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Step 20-C — Add Tunnel Quality Tests + Persistent GRE
+# Adds iperf3 TCP/UDP/jitter/loss testing, report export, and systemd persistent GRE.
+
+REPO_DIR="${1:-}"
+if [[ -z "$REPO_DIR" ]]; then
+  if [[ -f ./bootstrap.sh && -d ./menus && -d ./modules ]]; then
+    REPO_DIR="$(pwd)"
+  elif [[ -d /opt/viptrue-toolbox && -f /opt/viptrue-toolbox/bootstrap.sh ]]; then
+    REPO_DIR="/opt/viptrue-toolbox"
+  elif [[ -d "$HOME/viptrue-toolbox" && -f "$HOME/viptrue-toolbox/bootstrap.sh" ]]; then
+    REPO_DIR="$HOME/viptrue-toolbox"
+  else
+    echo "ERROR: Could not detect viptrue-toolbox repo. Run from repo root or pass path:" >&2
+    echo "  bash $0 /opt/viptrue-toolbox" >&2
+    exit 1
+  fi
+fi
+
+cd "$REPO_DIR"
+mkdir -p modules/utility menus
+TS="$(date +%F-%H%M%S)"
+BACKUP_DIR="/root/viptrue-toolbox-step20c-backup-$TS"
+mkdir -p "$BACKUP_DIR"
+cp -a VERSION "$BACKUP_DIR/VERSION.bak" 2>/dev/null || true
+cp -a menus/utility.sh "$BACKUP_DIR/utility.sh.bak" 2>/dev/null || true
+cp -a modules/utility/04-tunnel-manager.sh "$BACKUP_DIR/04-tunnel-manager.sh.bak" 2>/dev/null || true
+
+echo "0.1.5" > VERSION
+
+echo "Backup saved to: $BACKUP_DIR"
+
+# Ensure Utility menu contains Tunnel Manager.
+python3 - <<'PY'
+from pathlib import Path
+import re
+p = Path('menus/utility.sh')
+if not p.exists():
+    raise SystemExit('menus/utility.sh not found')
+text = p.read_text()
+text = text.replace('echo line', 'line')
+# normalize old names
+text = text.replace('Tunnel Tools', 'Tunnel Manager')
+if 'Tunnel Manager' not in text:
+    if 'Offline Assets / Local Installer' in text:
+        text = re.sub(r'(echo "3\. Offline Assets / Local Installer".*)', r'\1\n  echo "4. Tunnel Manager"', text, count=1)
+    else:
+        text = re.sub(r'(echo "2\. Temporary Tunnel / Proxy for Installations".*)', r'\1\n  echo "4. Tunnel Manager"', text, count=1)
+if 'Enter your choice [0-3]' in text:
+    text = text.replace('Enter your choice [0-3]', 'Enter your choice [0-4]')
+if not re.search(r'\n\s*4\)', text):
+    text = re.sub(r'(\n\s*0\)\s*\n\s*break\s*\n\s*;;)', r'\n    4)\n      bash "$BASE_DIR/modules/utility/04-tunnel-manager.sh"\n      ;;\1', text, count=1)
+# If handler still points to old 04-tunnel-tools.sh, fix it.
+text = text.replace('modules/utility/04-tunnel-tools.sh', 'modules/utility/04-tunnel-manager.sh')
+p.write_text(text)
+PY
+
+cat > modules/utility/04-tunnel-manager.sh <<'EOF_TM'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$BASE_DIR/lib/ui.sh"
 
@@ -721,3 +781,29 @@ while true; do
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
 done
+EOF_TM
+
+chmod +x modules/utility/04-tunnel-manager.sh
+
+# Syntax check all scripts
+find . -type f -name "*.sh" -print0 | while IFS= read -r -d '' f; do
+  bash -n "$f"
+done
+
+echo
+echo "✅ Step 20-C completed successfully."
+echo "Version: $(cat VERSION)"
+echo
+echo "Next: commit and push, then test from GitHub main:"
+echo "  git add ."
+echo "  git commit -m 'Add tunnel quality tests and persistent GRE services'"
+echo "  git push"
+echo
+echo "Clean GitHub test:"
+echo "  rm -rf /opt/viptrue-toolbox"
+echo "  curl -sSL https://raw.githubusercontent.com/ArashPersian/viptrue-toolbox/main/bootstrap.sh | sudo bash"
+echo
+echo "Release after stable test:"
+echo "  git tag v0.1.5"
+echo "  git push origin v0.1.5"
+echo "  gh release create v0.1.5 --title 'VIPTrue Server Toolbox v0.1.5' --notes 'Adds Tunnel Manager quality tests, iperf3 reports, and persistent GRE systemd services.'"
