@@ -706,10 +706,9 @@ while true; do
   echo "4. Quality / Speed Tests"
   echo "5. Reverse SSH helper: PasarGuard pg-node"
   echo "6. Live tcpdump"
-  echo "7. WireGuard over Hysteria2 obfs/salamander"
   echo "0. Back"
   echo
-  read -r -p "Enter your choice [0-7]: " choice
+  read -r -p "Enter your choice [0-6]: " choice
   case "$choice" in
     1) compatibility_scan ;;
     2) gre_menu ;;
@@ -717,7 +716,6 @@ while true; do
     4) quality_menu ;;
     5) reverse_ssh_menu ;;
     6) live_tcpdump ;;
-    7) bash "$BASE_DIR/modules/utility/tunnel-wg-hy2-obfs.sh" ;;
     0) break ;;
     99) viptrue_main_menu ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
