@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export BASE_DIR
-
-source "$BASE_DIR/menus/main.sh"
-viptrue_main_menu
+exec bash "$BASE_DIR/viptrue.sh"

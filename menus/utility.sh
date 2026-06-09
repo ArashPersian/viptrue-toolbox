@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-export TOOLBOX_VERSION="${TOOLBOX_VERSION:-0.1.0}"
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+BASE_DIR="${BASE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "$BASE_DIR/lib/ui.sh"
 
-while true; do
-  title
-  echo -e "${CYAN}Utility Tools${NC}"
-  echo
-  echo "1. Server Factory-like Reset"
-  echo "2. Temporary Tunnel / Proxy for Installations"
-  echo "3. Offline Assets / Local Installer"
-  echo "4. Tunnel Manager"
-  echo "5. Floating IP Manager"
-  echo "0. Back"
-  line
-  read -r -p "Enter your choice [0-5]: " choice
-  case "$choice" in
-    1)
-      if [[ -f "$BASE_DIR/modules/utility/01-factory-reset.sh" ]]; then
-        bash "$BASE_DIR/modules/utility/01-factory-reset.sh"
-      else
-        echo -e "${YELLOW}Server Factory-like Reset is not configured yet.${NC}"
-        pause
-      fi
-      ;;
-    2) bash "$BASE_DIR/modules/utility/02-temp-tunnel.sh" ;;
-    3) bash "$BASE_DIR/modules/utility/03-offline-assets.sh" ;;
-    4) bash "$BASE_DIR/modules/utility/04-tunnel-manager.sh" ;;
-    5) bash "$BASE_DIR/modules/utility/06-floating-ip-manager.sh" ;;
-    0) break ;;
-    99) viptrue_main_menu ;;
-    *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
-  esac
-done
+viptrue_utility_menu() {
+  while true; do
+    title
+    echo -e "${CYAN}Utility Tools${NC}"
+    echo
+    echo "1. Server Factory-like Reset"
+    echo "2. Temporary Tunnel / Proxy for Installations"
+    echo "3. Offline Assets / Local Installer"
+    echo "4. Tunnel Manager"
+    echo "5. Floating IP Manager"
+    echo "0. Back"
+    echo
+    line
+    read -r -p "Enter your choice [0-5]: " choice
+
+    case "$choice" in
+      1) bash "$BASE_DIR/modules/utility/01-factory-reset.sh" ;;
+      2) bash "$BASE_DIR/modules/utility/02-temp-tunnel.sh" ;;
+      3) bash "$BASE_DIR/modules/utility/03-offline-assets.sh" ;;
+      4) bash "$BASE_DIR/modules/utility/04-tunnel-manager.sh" ;;
+      5) bash "$BASE_DIR/modules/utility/06-floating-ip-manager.sh" ;;
+      0) return 0 ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  viptrue_utility_menu
+fi
