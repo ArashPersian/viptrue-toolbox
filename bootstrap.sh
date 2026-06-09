@@ -120,12 +120,23 @@ run_toolbox() {
   say "Starting VIPTrue Toolbox..."
   echo
 
-  if [[ -f "main.sh" ]]; then
-    bash main.sh
-  elif [[ -f "viptrue.sh" ]]; then
+  if [[ -f "viptrue.sh" ]]; then
     bash viptrue.sh
+  elif [[ -f "main.sh" ]]; then
+    bash main.sh
   elif [[ -f "menus/main.sh" ]]; then
-    bash menus/main.sh
+    BASE_DIR="$INSTALL_DIR"
+    export BASE_DIR
+    source "$INSTALL_DIR/lib/ui.sh"
+    source "$INSTALL_DIR/menus/work.sh" 2>/dev/null || true
+    source "$INSTALL_DIR/menus/private.sh" 2>/dev/null || true
+    source "$INSTALL_DIR/menus/utility.sh" 2>/dev/null || true
+    source "$INSTALL_DIR/menus/main.sh"
+    if declare -F viptrue_main_menu >/dev/null 2>&1; then
+      viptrue_main_menu
+    else
+      bash menus/main.sh
+    fi
   else
     ok "Installed/updated at $INSTALL_DIR"
     warn "No launcher found. Available files:"
