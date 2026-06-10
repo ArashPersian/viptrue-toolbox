@@ -13,18 +13,20 @@ viptrue_work_menu() {
     echo "2. Server Update & Basic Packages"
     echo "3. UFW Firewall"
     echo "4. PasarGuard Node"
-    echo "5. Utility Tools"
+    echo "5. Cloudflare XHTTP Nginx Setup"
+    echo "6. Utility Tools"
     echo "0. Back"
     echo
     line
-    read -r -p "Enter your choice [0-5]: " choice
+    read -r -p "Enter your choice [0-6]: " choice
 
     case "$choice" in
       1) bash "$BASE_DIR/modules/work/01-root-ssh.sh" ;;
       2) bash "$BASE_DIR/modules/work/02-update-server.sh" ;;
       3) bash "$BASE_DIR/modules/work/03-ufw-firewall.sh" ;;
       4) bash "$BASE_DIR/modules/work/03-pasarguard-node.sh" ;;
-      5)
+      5) bash "$BASE_DIR/modules/work/05-cf-xhttp-nginx.sh" ;;
+      6)
         if declare -F viptrue_utility_menu >/dev/null 2>&1; then
           viptrue_utility_menu
         else
