@@ -57,6 +57,27 @@ install_nginx() {
   systemctl start nginx
 }
 
+
+paste_multiline_file() {
+  local target="$1"
+  local title="$2"
+
+  echo
+  echo -e "${CYAN}${title}${NC}"
+  echo "Paste the full content below."
+  echo "When finished, type this line exactly and press Enter:"
+  echo "END_VIPTRUE_CERT"
+  echo
+
+  mkdir -p "$(dirname "$target")"
+  : > "$target"
+
+  while IFS= read -r line; do
+    [[ "$line" == "END_VIPTRUE_CERT" ]] && break
+    printf '%s\n' "$line" >> "$target"
+  done
+}
+
 prepare_cf_cert() {
   local cert="$1"
   local key="$2"
@@ -64,46 +85,76 @@ prepare_cf_cert() {
   mkdir -p "$(dirname "$cert")" "$(dirname "$key")"
   chmod 700 "$(dirname "$cert")" 2>/dev/null || true
 
-  if [[ ! -s "$cert" ]]; then
-    echo
-    echo -e "${YELLOW}Cloudflare Origin Certificate file not found:${NC}"
-    echo "  $cert"
-    echo
-    echo "Paste your Cloudflare Origin Certificate in the editor."
-    echo "Cloudflare path:"
-    echo "  SSL/TLS -> Origin Server -> Create Certificate"
-    echo
-    pause
-    nano "$cert"
-  fi
+  echo
+  echo -e "${CYAN}Cloudflare Origin Certificate setup${NC}"
+  echo "Certificate path:"
+  echo "  $cert"
+  echo "Private key path:"
+  echo "  $key"
+  echo
+  echo "1. Use existing files if present"
+  echo "2. Paste certificate and private key now"
+  echo "3. Open nano editors"
+  echo
+  read -r -p "Choose [1-3, default 1]: " cert_mode
+  cert_mode="${cert_mode:-1}"
 
-  if [[ ! -s "$key" ]]; then
-    echo
-    echo -e "${YELLOW}Cloudflare Origin Private Key file not found:${NC}"
-    echo "  $key"
-    echo
-    echo "Paste your Cloudflare Origin Private Key in the editor."
-    echo
-    pause
-    nano "$key"
-  fi
+  case "$cert_mode" in
+    2)
+      paste_multiline_file "$cert" "Paste Cloudflare Origin Certificate"
+      paste_multiline_file "$key" "Paste Cloudflare Origin Private Key"
+      ;;
+    3)
+      nano "$cert"
+      nano "$key"
+      ;;
+    1)
+      if [[ ! -s "$cert" || ! -s "$key" ]]; then
+        echo
+        echo -e "${YELLOW}Certificate or key file is missing.${NC}"
+        echo "You can paste them now."
+        read -r -p "Paste certificate/key now? [Y/n]: " paste_now
+        case "$paste_now" in
+          n|N|no|NO)
+            nano "$cert"
+            nano "$key"
+            ;;
+          *)
+            paste_multiline_file "$cert" "Paste Cloudflare Origin Certificate"
+            paste_multiline_file "$key" "Paste Cloudflare Origin Private Key"
+            ;;
+        esac
+      fi
+      ;;
+    *)
+      echo -e "${RED}Invalid choice.${NC}"
+      pause
+      return 1
+      ;;
+  esac
 
   chmod 644 "$cert"
   chmod 600 "$key"
 
   if ! grep -q "BEGIN CERTIFICATE" "$cert"; then
     echo -e "${RED}Certificate file does not look valid: $cert${NC}"
+    echo "It must include:"
+    echo "-----BEGIN CERTIFICATE-----"
     pause
     return 1
   fi
 
   if ! grep -q "BEGIN .*PRIVATE KEY" "$key"; then
     echo -e "${RED}Private key file does not look valid: $key${NC}"
+    echo "It must include:"
+    echo "-----BEGIN PRIVATE KEY-----"
+    echo "or"
+    echo "-----BEGIN RSA PRIVATE KEY-----"
     pause
     return 1
   fi
 
-  echo -e "${GREEN}Cloudflare Origin certificate files look present.${NC}"
+  echo -e "${GREEN}Cloudflare Origin certificate and private key are valid-looking.${NC}"
 }
 
 write_nginx_conf() {
