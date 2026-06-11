@@ -348,6 +348,37 @@ setup_cf_xhttp_nginx() {
   print_summary "$domain" "$public_port" "$xray_host" "$xray_port" "$path"
 }
 
+
+create_speed_test_files() {
+  title
+  echo -e "${CYAN}Create Nginx Speed Test Files${NC}"
+  line
+  echo
+
+  local root="/var/www/viptrue-speed"
+  mkdir -p "$root/speed"
+
+  echo "Creating test files:"
+  echo "  $root/speed/1mb.bin"
+  echo "  $root/speed/10mb.bin"
+  echo "  $root/speed/50mb.bin"
+  echo
+
+  dd if=/dev/zero of="$root/speed/1mb.bin" bs=1M count=1 status=none
+  dd if=/dev/zero of="$root/speed/10mb.bin" bs=1M count=10 status=none
+  dd if=/dev/zero of="$root/speed/50mb.bin" bs=1M count=50 status=none
+
+  chown -R www-data:www-data "$root" 2>/dev/null || true
+  chmod -R 755 "$root"
+
+  echo -e "${GREEN}Speed test files created.${NC}"
+  echo
+  echo "Recommended speed path:"
+  echo "  /speed/10mb.bin"
+  echo
+  pause
+}
+
 show_status() {
   title
   echo -e "${CYAN}Cloudflare XHTTP Nginx Status${NC}"
