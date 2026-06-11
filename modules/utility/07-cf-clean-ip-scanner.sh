@@ -671,18 +671,24 @@ ip_list_menu() {
 ensure_xray() {
   local xray_bin
   xray_bin="$(find_xray)"
+
   if [[ -z "$xray_bin" ]]; then
-    echo -e "${YELLOW}xray binary not found.${NC}"
-    if install_xray_for_scanner; then
-      xray_bin="$(find_xray)"
-    fi
+    echo -e "${YELLOW}xray binary not found.${NC}" >&2
+    install_xray_for_scanner >&2 || true
+    xray_bin="$(find_xray)"
   fi
-  if [[ -z "$xray_bin" ]]; then
-    echo -e "${RED}Xray is still not available.${NC}"
-    pause
+
+  if [[ -z "$xray_bin" ]] || [[ ! -x "$xray_bin" ]]; then
+    echo -e "${RED}Xray is still not available. Install it first.${NC}" >&2
+    echo >&2
+    echo "Quick install:" >&2
+    echo '  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install' >&2
+    echo >&2
+    pause >&2
     return 1
   fi
-  echo "$xray_bin"
+
+  printf '%s\n' "$xray_bin"
 }
 
 run_scan() {
