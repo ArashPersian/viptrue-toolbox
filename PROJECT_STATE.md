@@ -9,10 +9,11 @@
 - Default branch: `main`
 - Working branch: `stage0/governance-bootstrap`
 - Current main commit: `b791606e4393aa8af64ec62a3e50bb0c7df1b394`
+- Working branch head: `0629f44aab2734655b1d581609f3b5e6a843e36f`
 - Latest known tag: `v0.1.3`
 - Latest known release: `VIPTrue Server Toolbox v0.1.3`
 - Active issue: `#1 — Stage 0: Project Governance Bootstrap`
-- Active PR: `pending`
+- Active PR: `#2 — Add project governance files`
 
 ## Completed work
 
@@ -21,6 +22,8 @@
 - Missing governance files identified.
 - Stage 0 issue created.
 - Stage 0 working branch created from `main`.
+- Stage 0 governance files added.
+- Draft PR opened for review.
 
 ## Current menu map
 
@@ -58,6 +61,7 @@
 - `VERSION` check.
 - Governance file existence check.
 - Menu entry read-through from repository files.
+- Draft PR creation check.
 - No real server test performed.
 
 ## Release policy
