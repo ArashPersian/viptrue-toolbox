@@ -72,6 +72,32 @@ Other engines are intentionally registry/scanner entries for this PR. Their menu
 response is explicit: registered but not implemented yet; use Manual Tunnel Lab
 or wait for the next engine PR.
 
+## Scan Groups
+
+The scan UX groups registry rows instead of printing one long default table:
+
+- `BUILDABLE NOW`: Auto Tunnel Expert can build this engine now.
+- `MANUAL / IMPLEMENTED PRESETS`: implemented elsewhere in the toolbox or
+  available through Manual Tunnel Lab.
+- `PRIORITY NEXT`: next implementation candidates, currently scaffolded.
+- `PLANNED / EXTERNAL REQUIRED`: planned, research, or dependency-heavy engines.
+- `EMERGENCY / HARD MODE`: DNS and other hard-mode paths, not daily defaults.
+- `APPLICATION-SPECIFIC PRESETS`: WireGuard/Xray/application-shaped entries.
+
+Compact readiness labels are:
+
+- `YES`: buildable now
+- `MAN`: manual preset
+- `NEXT`: priority-next
+- `PLAN`: planned/scaffolded
+- `EXT`: external required
+- `EMRG`: emergency-only
+
+WireGuard and Xray entries remain visible in the full ranking, but generic scans
+do not rank them above generic forwarding engines. Emergency engines are grouped
+separately and are not default recommendations while normal methods are
+available.
+
 ## Next Implementation Order
 
 1. Hysteria2 generic UDP forward polish

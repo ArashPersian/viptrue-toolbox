@@ -7,6 +7,7 @@ source "$BASE_DIR/lib/ui.sh"
 
 LAST_CHECKED="No diagnostics have been run yet."
 LAST_ISSUE="Run a Tunnel Manager check first."
+LAST_TUNNEL_STATE="Unknown."
 LAST_ACTION="Start with Preflight Checks."
 LAST_SERVER_ACTION="Unknown."
 
@@ -79,16 +80,28 @@ set_summary() {
   LAST_ISSUE="$2"
   LAST_ACTION="$3"
   LAST_SERVER_ACTION="$4"
+  LAST_TUNNEL_STATE="${5:-Unknown.}"
 }
 
 print_summary() {
   echo
   line
   echo -e "${CYAN}Diagnostics Summary${NC}"
-  echo "Checked: $LAST_CHECKED"
-  echo "Likely issue: $LAST_ISSUE"
-  echo "Suggested next action: $LAST_ACTION"
-  echo "Server-side action needed: $LAST_SERVER_ACTION"
+  echo
+  echo "Checked:"
+  echo "  $LAST_CHECKED"
+  echo
+  echo "Result:"
+  echo "  $LAST_ISSUE"
+  echo
+  echo "Tunnel state:"
+  echo "  $LAST_TUNNEL_STATE"
+  echo
+  echo "Next:"
+  echo "  $LAST_ACTION"
+  echo
+  echo "Server-side action:"
+  echo "  $LAST_SERVER_ACTION"
   line
 }
 
@@ -1891,6 +1904,34 @@ hy2_auto_value_safe_for_bundle() {
   fi
 }
 
+hy2_expert_bundle_dir() {
+  if [[ "$EUID" -eq 0 && -d /root && -w /root ]]; then
+    printf '/root\n'
+  elif [[ -w "$BASE_DIR" ]]; then
+    printf '%s\n' "$BASE_DIR"
+  elif [[ -n "${HOME:-}" && -w "$HOME" ]]; then
+    printf '%s\n' "$HOME"
+  else
+    printf '/tmp\n'
+  fi
+}
+
+hy2_expert_save_bundle_file() {
+  local kind="$1"
+  local profile="$2"
+  local bundle="$3"
+  local dir path old_umask
+
+  dir="$(hy2_expert_bundle_dir)"
+  mkdir -p "$dir" 2>/dev/null || true
+  path="$dir/viptrue-${kind}-bundle-${profile}.txt"
+  old_umask="$(umask)"
+  umask 077
+  printf '%s\n' "$bundle" > "$path"
+  umask "$old_umask"
+  printf '%s\n' "$path"
+}
+
 hy2_auto_stop_conflicting_hysteria_services() {
   local config_path="$1"
   local service_name="$2"
@@ -2018,8 +2059,29 @@ hy2_engine_dependency_available() {
       ""|none) continue ;;
       external) return 1 ;;
     esac
-    have_cmd "$dep" || return 1
+    hy2_command_available_cached "$dep" || return 1
   done
+
+  return 0
+}
+
+hy2_command_available_cached() {
+  local cmd="$1"
+
+  if [[ $'\n'"${HY2_CMD_CACHE_OK:-}" == *$'\n'"$cmd"$'\n'* ]]; then
+    return 0
+  fi
+  if [[ $'\n'"${HY2_CMD_CACHE_FAIL:-}" == *$'\n'"$cmd"$'\n'* ]]; then
+    return 1
+  fi
+
+  if have_cmd "$cmd"; then
+    HY2_CMD_CACHE_OK="${HY2_CMD_CACHE_OK:-}${cmd}"$'\n'
+    return 0
+  fi
+
+  HY2_CMD_CACHE_FAIL="${HY2_CMD_CACHE_FAIL:-}${cmd}"$'\n'
+  return 1
 }
 
 hy2_engine_traffic_matches() {
@@ -2044,23 +2106,185 @@ hy2_engine_buildable_now() {
   : "$dependencies"
 }
 
+hy2_engine_short_name() {
+  case "$1" in
+    hysteria2_obfs_udp) printf 'Hysteria2 OBFS UDP\n' ;;
+    hysteria2_udp_forward) printf 'Hysteria2 UDP FWD\n' ;;
+    waterwall_reverse_tls) printf 'WaterWall RevTLS\n' ;;
+    reverse_ws_proxy) printf 'Reverse WS Proxy\n' ;;
+    reverse_grpc_proxy) printf 'Reverse gRPC Proxy\n' ;;
+    wireguard_over_hysteria) printf 'WG over Hysteria2\n' ;;
+    xray_vless_reality_tcp) printf 'Xray REALITY TCP\n' ;;
+    xray_ws_httpupgrade_legacy) printf 'Xray WS Legacy\n' ;;
+    cloudflare_clean_ip) printf 'Cloudflare CleanIP\n' ;;
+    dns_over_tcp_segmentation_probe) printf 'DNS TCP Segment\n' ;;
+    fake_packet_ttl_split_fragment) printf 'TTL Split Frag\n' ;;
+    udp2raw_style_wrapper) printf 'udp2raw Wrapper\n' ;;
+    wireguard_site_to_site) printf 'WG Site-to-Site\n' ;;
+    *) printf '%s\n' "$2" | cut -c1-20 ;;
+  esac
+}
+
+hy2_engine_short_speed() {
+  case "$1" in
+    high) printf 'HIGH\n' ;;
+    medium) printf 'MED\n' ;;
+    low) printf 'LOW\n' ;;
+    *) printf 'UNK\n' ;;
+  esac
+}
+
+hy2_engine_short_risk() {
+  case "$1" in
+    lower) printf 'LOW\n' ;;
+    medium/lower) printf 'MED/LOW\n' ;;
+    medium) printf 'MED\n' ;;
+    higher) printf 'HIGHER\n' ;;
+    ISP-specific) printf 'ISP\n' ;;
+    emergency) printf 'EMRG\n' ;;
+    *) printf 'UNK\n' ;;
+  esac
+}
+
+hy2_engine_short_fit() {
+  case "$1" in
+    high) printf 'HIGH\n' ;;
+    medium) printf 'MED\n' ;;
+    low) printf 'LOW\n' ;;
+    emergency) printf 'EMRG\n' ;;
+    *) printf 'UNK\n' ;;
+  esac
+}
+
+hy2_engine_ready_label() {
+  local engine_id="$1"
+  local status="$2"
+  local use_case="$3"
+
+  if [[ "$status" == *emergency-only* ]]; then
+    printf 'EMRG\n'
+  elif [[ "$use_case" == "wireguard" || "$use_case" == "xray" ]]; then
+    printf 'APP\n'
+  elif [[ "$engine_id" == "hysteria2_obfs_udp" ]]; then
+    printf 'YES\n'
+  elif [[ "$status" == *implemented* ]]; then
+    printf 'MAN\n'
+  elif [[ "$status" == *priority-next* ]]; then
+    printf 'NEXT\n'
+  elif [[ "$status" == *external-required* ]]; then
+    printf 'EXT\n'
+  else
+    printf 'PLAN\n'
+  fi
+}
+
+hy2_engine_category() {
+  local ready="$1"
+  local status="$2"
+
+  case "$ready" in
+    YES) printf 'buildable\n' ;;
+    MAN) printf 'manual\n' ;;
+    NEXT) printf 'priority\n' ;;
+    EMRG) printf 'emergency\n' ;;
+    APP) printf 'app\n' ;;
+    EXT) printf 'planned\n' ;;
+    *)
+      if [[ "$status" == *planned* || "$status" == *research* || "$status" == *scaffolded* ]]; then
+        printf 'planned\n'
+      else
+        printf 'planned\n'
+      fi
+      ;;
+  esac
+}
+
+hy2_engine_note() {
+  local engine_id="$1"
+  local status="$2"
+  local use_case="$3"
+  local destination_listening="$4"
+
+  if [[ "$engine_id" == "hysteria2_obfs_udp" ]]; then
+    printf 'proven\n'
+  elif [[ "$status" == *priority-next* ]]; then
+    printf 'next\n'
+  elif [[ "$status" == *emergency-only* ]]; then
+    printf 'hard-mode\n'
+  elif [[ "$use_case" == "wireguard" || "$use_case" == "xray" ]]; then
+    printf 'app preset\n'
+  elif [[ "$status" == *external-required* ]]; then
+    printf 'external\n'
+  elif [[ "$status" == *implemented* ]]; then
+    printf 'manual\n'
+  elif [[ "$destination_listening" == "false" ]]; then
+    printf 'dest later\n'
+  else
+    printf 'planned\n'
+  fi
+}
+
+hy2_destination_status_label() {
+  case "$1" in
+    true) printf 'detected\n' ;;
+    false) printf 'not detected\n' ;;
+    *) printf 'not checked\n' ;;
+  esac
+}
+
+hy2_split_pipe_row() {
+  local row="$1"
+  local old_ifs
+
+  HY2_PIPE_FIELDS=()
+  old_ifs="$IFS"
+  IFS='|'
+  read -r -a HY2_PIPE_FIELDS <<< "$row"
+  IFS="$old_ifs"
+}
+
 hy2_engine_score_row() {
   local row="$1"
   local requested_traffic="$2"
   local listen_port="$3"
   local destination_listening="$4"
-  local engine_id display_name _family traffic _direction _use_case status iran_fit speed risk dependencies
+  local engine_id display_name _family traffic _direction use_case status iran_fit speed risk dependencies
   local _requires_domain _requires_dns_zone _requires_cloudflare _requires_root _supports_multi_foreign
   local supports_generic_tcp supports_generic_udp probe_method build_method test_method notes
-  local score=0 buildable reason dependency_ok="false" port_ok="unknown"
+  local score=0 buildable dependency_ok="false" port_ok="unknown" ready category note short_name short_speed short_risk short_fit
 
-  IFS='|' read -r engine_id display_name _family traffic _direction _use_case status iran_fit speed risk dependencies \
-    _requires_domain _requires_dns_zone _requires_cloudflare _requires_root _supports_multi_foreign supports_generic_tcp \
-    supports_generic_udp probe_method build_method test_method notes <<< "$row"
+  hy2_split_pipe_row "$row"
+  engine_id="${HY2_PIPE_FIELDS[0]:-}"
+  display_name="${HY2_PIPE_FIELDS[1]:-}"
+  _family="${HY2_PIPE_FIELDS[2]:-}"
+  traffic="${HY2_PIPE_FIELDS[3]:-}"
+  _direction="${HY2_PIPE_FIELDS[4]:-}"
+  use_case="${HY2_PIPE_FIELDS[5]:-}"
+  status="${HY2_PIPE_FIELDS[6]:-}"
+  iran_fit="${HY2_PIPE_FIELDS[7]:-}"
+  speed="${HY2_PIPE_FIELDS[8]:-}"
+  risk="${HY2_PIPE_FIELDS[9]:-}"
+  dependencies="${HY2_PIPE_FIELDS[10]:-}"
+  _requires_domain="${HY2_PIPE_FIELDS[11]:-}"
+  _requires_dns_zone="${HY2_PIPE_FIELDS[12]:-}"
+  _requires_cloudflare="${HY2_PIPE_FIELDS[13]:-}"
+  _requires_root="${HY2_PIPE_FIELDS[14]:-}"
+  _supports_multi_foreign="${HY2_PIPE_FIELDS[15]:-}"
+  supports_generic_tcp="${HY2_PIPE_FIELDS[16]:-}"
+  supports_generic_udp="${HY2_PIPE_FIELDS[17]:-}"
+  probe_method="${HY2_PIPE_FIELDS[18]:-}"
+  build_method="${HY2_PIPE_FIELDS[19]:-}"
+  test_method="${HY2_PIPE_FIELDS[20]:-}"
+  notes="${HY2_PIPE_FIELDS[21]:-}"
   : "$probe_method" "$build_method" "$test_method" "$notes"
 
   if ! hy2_engine_traffic_matches "$traffic" "$requested_traffic"; then
-    printf '0|%s|%s|%s|%s|%s|%s|no|traffic mismatch for %s\n' "$engine_id" "$display_name" "$status" "$speed" "$risk" "$iran_fit" "$requested_traffic"
+    ready="$(hy2_engine_ready_label "$engine_id" "$status" "$use_case")"
+    category="$(hy2_engine_category "$ready" "$status")"
+    short_name="$(hy2_engine_short_name "$engine_id" "$display_name")"
+    printf '0|%s|%s|%s|%s|%s|%s|%s|%s|traffic|%s|%s|false|unknown\n' \
+      "$engine_id" "$short_name" "$status" "$(hy2_engine_short_speed "$speed")" "$(hy2_engine_short_risk "$risk")" \
+      "$(hy2_engine_short_fit "$iran_fit")" "$ready" "$category" "$traffic" "$use_case"
     return
   fi
 
@@ -2071,16 +2295,21 @@ hy2_engine_score_row() {
 
   if [[ "$engine_id" == hysteria2_* || "$engine_id" == "wireguard_over_hysteria" ]]; then
     if [[ "$listen_port" == "443" ]]; then
-      printf '0|%s|%s|blocked|%s|%s|%s|no|UDP 443 is forbidden for Hysteria2\n' "$engine_id" "$display_name" "$speed" "$risk" "$iran_fit"
+      ready="$(hy2_engine_ready_label "$engine_id" "$status" "$use_case")"
+      category="$(hy2_engine_category "$ready" "$status")"
+      short_name="$(hy2_engine_short_name "$engine_id" "$display_name")"
+      printf '0|%s|%s|blocked|%s|%s|%s|%s|%s|no 443|%s|%s|%s|blocked\n' \
+        "$engine_id" "$short_name" "$(hy2_engine_short_speed "$speed")" "$(hy2_engine_short_risk "$risk")" \
+        "$(hy2_engine_short_fit "$iran_fit")" "$ready" "$category" "$traffic" "$use_case" "$dependency_ok"
       return
     fi
   fi
 
-  if valid_port "$listen_port" && [[ -z "$(list_listeners udp "$listen_port")" ]]; then
-    port_ok="free"
+  if valid_port "$listen_port"; then
+    port_ok="${HY2_SCORE_PORT_OK:-unknown}"
+  fi
+  if [[ "$port_ok" == "free" ]]; then
     score=$((score + 10))
-  elif valid_port "$listen_port"; then
-    port_ok="busy"
   fi
 
   if [[ "$status" == *implemented* ]]; then
@@ -2099,26 +2328,36 @@ hy2_engine_score_row() {
   [[ "$risk" == "lower" || "$risk" == "medium/lower" ]] && score=$((score + 5))
   [[ "$destination_listening" == "true" && ( "$supports_generic_udp" == "yes" || "$supports_generic_tcp" == "yes" ) ]] && score=$((score + 5))
 
+  if [[ "$use_case" == "wireguard" || "$use_case" == "xray" ]]; then
+    score=$((score - 25))
+    ((score < 0)) && score=0
+  fi
+
   if [[ "$status" == *emergency-only* && "$score" -gt 55 ]]; then
     score=55
   fi
 
   buildable="$(hy2_engine_buildable_now "$engine_id" "$status" "$dependencies")"
-  if [[ "$dependency_ok" == "false" && "$buildable" == "yes" ]]; then
-    buildable="install needed"
-  fi
+  : "$buildable"
 
-  reason="deps=$dependency_ok, port=$port_ok, status=$status"
-  [[ "$destination_listening" == "false" ]] && reason="$reason, destination listener not detected"
-  [[ "$status" == *emergency-only* ]] && reason="$reason, emergency-only"
-  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$score" "$engine_id" "$display_name" "$status" "$speed" "$risk" "$iran_fit" "$buildable" "$reason"
+  ready="$(hy2_engine_ready_label "$engine_id" "$status" "$use_case")"
+  category="$(hy2_engine_category "$ready" "$status")"
+  note="$(hy2_engine_note "$engine_id" "$status" "$use_case" "$destination_listening")"
+  short_name="$(hy2_engine_short_name "$engine_id" "$display_name")"
+  short_speed="$(hy2_engine_short_speed "$speed")"
+  short_risk="$(hy2_engine_short_risk "$risk")"
+  short_fit="$(hy2_engine_short_fit "$iran_fit")"
+
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "$score" "$engine_id" "$short_name" "$status" "$short_speed" "$short_risk" "$short_fit" \
+    "$ready" "$category" "$note" "$traffic" "$use_case" "$dependency_ok" "$port_ok"
 }
 
 hy2_engine_show_registry() {
   local engine_id _display_name family traffic _direction _use_case status iran_fit speed risk dependencies
   local _requires_domain _requires_dns_zone _requires_cloudflare _requires_root _supports_multi_foreign
   local _supports_generic_tcp _supports_generic_udp _probe_method _build_method _test_method notes
-  local count=0
+  local row count=0
 
   title
   echo -e "${CYAN}Auto Tunnel Expert > Engine Registry${NC}"
@@ -2126,9 +2365,30 @@ hy2_engine_show_registry() {
   echo
   printf '%-34s %-24s %-9s %-16s %-22s %-8s %-13s %s\n' "Engine ID" "Family" "Traffic" "Status" "Iran fit/risk" "Build" "Dependencies" "Notes"
   line
-  while IFS='|' read -r engine_id _display_name family traffic _direction _use_case status iran_fit speed risk dependencies \
-    _requires_domain _requires_dns_zone _requires_cloudflare _requires_root _supports_multi_foreign _supports_generic_tcp \
-    _supports_generic_udp _probe_method _build_method _test_method notes; do
+  while IFS= read -r row; do
+    hy2_split_pipe_row "$row"
+    engine_id="${HY2_PIPE_FIELDS[0]:-}"
+    _display_name="${HY2_PIPE_FIELDS[1]:-}"
+    family="${HY2_PIPE_FIELDS[2]:-}"
+    traffic="${HY2_PIPE_FIELDS[3]:-}"
+    _direction="${HY2_PIPE_FIELDS[4]:-}"
+    _use_case="${HY2_PIPE_FIELDS[5]:-}"
+    status="${HY2_PIPE_FIELDS[6]:-}"
+    iran_fit="${HY2_PIPE_FIELDS[7]:-}"
+    speed="${HY2_PIPE_FIELDS[8]:-}"
+    risk="${HY2_PIPE_FIELDS[9]:-}"
+    dependencies="${HY2_PIPE_FIELDS[10]:-}"
+    _requires_domain="${HY2_PIPE_FIELDS[11]:-}"
+    _requires_dns_zone="${HY2_PIPE_FIELDS[12]:-}"
+    _requires_cloudflare="${HY2_PIPE_FIELDS[13]:-}"
+    _requires_root="${HY2_PIPE_FIELDS[14]:-}"
+    _supports_multi_foreign="${HY2_PIPE_FIELDS[15]:-}"
+    _supports_generic_tcp="${HY2_PIPE_FIELDS[16]:-}"
+    _supports_generic_udp="${HY2_PIPE_FIELDS[17]:-}"
+    _probe_method="${HY2_PIPE_FIELDS[18]:-}"
+    _build_method="${HY2_PIPE_FIELDS[19]:-}"
+    _test_method="${HY2_PIPE_FIELDS[20]:-}"
+    notes="${HY2_PIPE_FIELDS[21]:-}"
     count=$((count + 1))
     printf '%-34s %-24s %-9s %-16s %-22s %-8s %-13s %s\n' \
       "$engine_id" "$family" "$traffic" "$status" "$iran_fit/$risk" \
@@ -2181,51 +2441,479 @@ hy2_expert_print_probe_commands() {
   echo -e "${YELLOW}Forwarding proof commands${NC}"
   echo "These prove forwarding only, not application auth."
   if [[ "$traffic" == "udp" || "$traffic" == "both" ]]; then
-    echo "Foreign watcher:"
-    echo "  timeout 40 tcpdump -ni any udp port $dest_port"
-    echo "Iran sender:"
-    echo "  echo viptrue-test >/dev/udp/127.0.0.1/$iran_port"
+    echo "UDP proof:"
+    echo "  On Foreign:"
+    echo "    timeout 40 tcpdump -ni any udp port $dest_port"
+    echo
+    echo "  On Iran:"
+    echo "    echo viptrue-test >/dev/udp/127.0.0.1/$iran_port"
   fi
   if [[ "$traffic" == "tcp" || "$traffic" == "both" ]]; then
     if [[ "$destination_listening" != "true" ]]; then
-      warn_line "TCP destination listener" "not detected; start a temporary listener on Foreign if this is only a probe"
-      echo "Foreign temporary listener:"
-      echo "  nc -lk -p $dest_port"
+      echo
+      echo "TCP proof:"
+      echo "  On Foreign, temporary listener:"
+      echo "    nc -lk -p $dest_port"
+    else
+      echo
+      echo "TCP proof:"
+      echo "  On Foreign:"
+      echo "    confirm the real TCP service is listening on $dest_port"
     fi
-    echo "Iran TCP connect probe:"
-    echo "  nc -vz 127.0.0.1 $iran_port"
-    echo "Iran TCP payload probe:"
-    echo "  printf 'viptrue-test\n' | nc -w2 127.0.0.1 $iran_port"
+    echo
+    echo "  On Iran:"
+    echo "    nc -vz 127.0.0.1 $iran_port"
+    echo "    printf 'viptrue-test\\n' | nc -w2 127.0.0.1 $iran_port"
   fi
 }
 
-hy2_expert_scan_ranked_engines() {
+hy2_expert_prepare_score_cache() {
   local traffic="$1"
   local listen_port="$2"
   local destination_listening="$3"
-  local row rank=0 score _engine_id display_name status speed risk iran_fit buildable reason
+  local row key output rows
+
+  key="$traffic|$listen_port|$destination_listening"
+  if [[ "${HY2_SCORE_CACHE_KEY:-}" == "$key" && -n "${HY2_SCORE_CACHE:-}" ]]; then
+    return 0
+  fi
+
+  if valid_port "$listen_port"; then
+    if [[ -z "$(list_listeners udp "$listen_port")" ]]; then
+      HY2_SCORE_PORT_OK="free"
+    else
+      HY2_SCORE_PORT_OK="busy"
+    fi
+  else
+    HY2_SCORE_PORT_OK="unknown"
+  fi
+
+  rows=""
+  while IFS= read -r row; do
+    rows+="$(hy2_engine_score_row "$row" "$traffic" "$listen_port" "$destination_listening")"$'\n'
+  done < <(hy2_engine_registry_rows)
+
+  output="$(printf '%s' "$rows" | sort -t'|' -k1,1nr -k3,3)"
+  HY2_SCORE_CACHE_KEY="$key"
+  HY2_SCORE_CACHE="$output"
+}
+
+hy2_expert_scored_rows() {
+  local traffic="$1"
+  local listen_port="$2"
+  local destination_listening="$3"
+
+  hy2_expert_prepare_score_cache "$traffic" "$listen_port" "$destination_listening"
+  printf '%s\n' "$HY2_SCORE_CACHE"
+}
+
+hy2_expert_ready_text() {
+  case "$1" in
+    YES) printf 'YES\n' ;;
+    MAN) printf 'MANUAL\n' ;;
+    NEXT) printf 'NOT YET\n' ;;
+    PLAN|EXT|APP|EMRG) printf 'NOT YET\n' ;;
+    *) printf 'UNKNOWN\n' ;;
+  esac
+}
+
+hy2_expert_summary_risk_text() {
+  case "$1" in
+    MED/LOW) printf 'MEDIUM/LOWER\n' ;;
+    MED) printf 'MEDIUM\n' ;;
+    LOW) printf 'LOWER\n' ;;
+    EMRG) printf 'EMERGENCY\n' ;;
+    ISP) printf 'ISP-SPECIFIC\n' ;;
+    HIGHER) printf 'HIGHER\n' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+hy2_expert_score_for_engine() {
+  local engine_id="$1"
+  local traffic="$2"
+  local listen_port="$3"
+  local destination_listening="$4"
+  local row score row_engine _rest
+
+  hy2_expert_prepare_score_cache "$traffic" "$listen_port" "$destination_listening"
+  while IFS= read -r row; do
+    hy2_split_pipe_row "$row"
+    score="${HY2_PIPE_FIELDS[0]:-}"
+    row_engine="${HY2_PIPE_FIELDS[1]:-}"
+    _rest="${HY2_PIPE_FIELDS[*]:2}"
+    if [[ "$row_engine" == "$engine_id" ]]; then
+      printf '%s\n' "$row"
+      return 0
+    fi
+  done < <(hy2_expert_scored_rows "$traffic" "$listen_port" "$destination_listening")
+
+  return 1
+}
+
+hy2_expert_print_table_header() {
+  printf '%-4s %-20s %-5s %-5s %-5s %-7s %-5s %s\n' "Rank" "Engine" "Ready" "Score" "Speed" "Risk" "Iran" "Note"
+  line
+}
+
+hy2_expert_print_rank_row() {
+  local rank="$1"
+  local score="$2"
+  local name="$3"
+  local speed="$4"
+  local risk="$5"
+  local iran_fit="$6"
+  local ready="$7"
+  local note="$8"
+
+  printf '%-4s %-20s %-5s %-5s %-5s %-7s %-5s %s\n' \
+    "$rank" "$name" "$ready" "$score" "$speed" "$risk" "$iran_fit" "$note"
+}
+
+hy2_expert_group_matches() {
+  local filter="$1"
+  local category="$2"
+  local ready="$3"
+  local note="$4"
+
+  case "$filter" in
+    buildable) [[ "$category" == "buildable" && "$note" != "traffic" ]] ;;
+    manual) [[ "$category" == "manual" && "$note" != "traffic" ]] ;;
+    priority) [[ "$category" == "priority" && "$note" != "traffic" ]] ;;
+    planned) [[ "$category" == "planned" ]] ;;
+    emergency) [[ "$category" == "emergency" ]] ;;
+    app) [[ "$category" == "app" ]] ;;
+    compact) [[ "$note" != "traffic" && "$category" != "planned" && "$category" != "emergency" && "$category" != "app" ]] ;;
+    all) [[ -n "$ready" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+hy2_expert_count_group() {
+  local traffic="$1"
+  local listen_port="$2"
+  local destination_listening="$3"
+  local filter="$4"
+  local row score _engine_id _name _status _speed _risk _iran_fit ready category note _rest
+  local count=0
+
+  hy2_expert_prepare_score_cache "$traffic" "$listen_port" "$destination_listening"
+  while IFS= read -r row; do
+    hy2_split_pipe_row "$row"
+    score="${HY2_PIPE_FIELDS[0]:-}"
+    _engine_id="${HY2_PIPE_FIELDS[1]:-}"
+    _name="${HY2_PIPE_FIELDS[2]:-}"
+    _status="${HY2_PIPE_FIELDS[3]:-}"
+    _speed="${HY2_PIPE_FIELDS[4]:-}"
+    _risk="${HY2_PIPE_FIELDS[5]:-}"
+    _iran_fit="${HY2_PIPE_FIELDS[6]:-}"
+    ready="${HY2_PIPE_FIELDS[7]:-}"
+    category="${HY2_PIPE_FIELDS[8]:-}"
+    note="${HY2_PIPE_FIELDS[9]:-}"
+    _rest="${HY2_PIPE_FIELDS[*]:10}"
+    : "$score" "$_engine_id" "$_name" "$_status" "$_speed" "$_risk" "$_iran_fit" "$_rest"
+    if hy2_expert_group_matches "$filter" "$category" "$ready" "$note"; then
+      count=$((count + 1))
+    fi
+  done < <(hy2_expert_scored_rows "$traffic" "$listen_port" "$destination_listening")
+  printf '%s\n' "$count"
+}
+
+hy2_expert_print_group() {
+  local title_text="$1"
+  local filter="$2"
+  local traffic="$3"
+  local listen_port="$4"
+  local destination_listening="$5"
+  local limit="${6:-0}"
+  local row score _engine_id name _status speed risk iran_fit ready category note
+  local count=0 printed=0
 
   echo
-  echo -e "${CYAN}Ranked tunnel candidates${NC}"
-  printf '%-4s %-30s %-19s %-5s %-7s %-21s %-9s %-13s %s\n' "Rank" "Engine" "Status" "Score" "Speed" "Lower detection-risk" "Iran fit" "Buildable now" "Reason"
-  line
-  while IFS='|' read -r score _engine_id display_name status speed risk iran_fit buildable reason; do
-    rank=$((rank + 1))
-    printf '%-4s %-30s %-19s %-5s %-7s %-21s %-9s %-13s %s\n' \
-      "$rank" "$display_name" "$status" "$score" "$speed" "$risk" "$iran_fit" "$buildable" "$reason"
-  done < <(
-    while IFS= read -r row; do
-      hy2_engine_score_row "$row" "$traffic" "$listen_port" "$destination_listening"
-    done < <(hy2_engine_registry_rows) | sort -t'|' -k1,1nr -k3,3
-  )
+  echo -e "${CYAN}${title_text}${NC}"
+  hy2_expert_print_table_header
+
+  hy2_expert_prepare_score_cache "$traffic" "$listen_port" "$destination_listening"
+  while IFS= read -r row; do
+    hy2_split_pipe_row "$row"
+    score="${HY2_PIPE_FIELDS[0]:-}"
+    _engine_id="${HY2_PIPE_FIELDS[1]:-}"
+    name="${HY2_PIPE_FIELDS[2]:-}"
+    _status="${HY2_PIPE_FIELDS[3]:-}"
+    speed="${HY2_PIPE_FIELDS[4]:-}"
+    risk="${HY2_PIPE_FIELDS[5]:-}"
+    iran_fit="${HY2_PIPE_FIELDS[6]:-}"
+    ready="${HY2_PIPE_FIELDS[7]:-}"
+    category="${HY2_PIPE_FIELDS[8]:-}"
+    note="${HY2_PIPE_FIELDS[9]:-}"
+    hy2_expert_group_matches "$filter" "$category" "$ready" "$note" || continue
+    count=$((count + 1))
+    if ((limit > 0 && printed >= limit)); then
+      continue
+    fi
+    printed=$((printed + 1))
+    hy2_expert_print_rank_row "$printed" "$score" "$name" "$speed" "$risk" "$iran_fit" "$ready" "$note"
+  done < <(hy2_expert_scored_rows "$traffic" "$listen_port" "$destination_listening")
+
+  if ((printed == 0)); then
+    echo "none"
+  elif ((limit > 0 && count > printed)); then
+    echo "... $((count - printed)) more hidden"
+  fi
+}
+
+hy2_expert_print_default_scan_view() {
+  local traffic="$1"
+  local listen_port="$2"
+  local destination_listening="$3"
+
   echo
-  echo "Scoring uses local dependency, port, destination-listener, and metadata checks until build/test steps run."
-  echo "Normal methods stay above emergency-only methods unless normal methods fail."
+  echo -e "${CYAN}Compact scan view${NC}"
+  echo "Default view hides the full registry so the recommendation stays readable."
+  hy2_expert_print_group "BUILDABLE NOW" "buildable" "$traffic" "$listen_port" "$destination_listening" 3
+  hy2_expert_print_group "MANUAL / IMPLEMENTED PRESETS" "manual" "$traffic" "$listen_port" "$destination_listening" 3
+  hy2_expert_print_group "PRIORITY NEXT" "priority" "$traffic" "$listen_port" "$destination_listening" 3
+
+  echo
+  echo -e "${CYAN}EMERGENCY / HARD MODE${NC}"
+  echo "Hidden by default. Select option 6 to inspect hard-mode engines."
+  echo -e "${CYAN}PLANNED / EXTERNAL REQUIRED${NC}"
+  echo "Hidden by default. Select option 3 for the full registry."
+  echo -e "${CYAN}APPLICATION-SPECIFIC PRESETS${NC}"
+  echo "WireGuard/Xray/application presets are hidden from generic default ranking."
+}
+
+hy2_expert_print_full_ranking() {
+  local traffic="$1"
+  local listen_port="$2"
+  local destination_listening="$3"
+
+  echo
+  echo -e "${CYAN}Full 49-engine ranking${NC}"
+  echo "Grouped by readiness so emergency and application-specific presets do not crowd the default view."
+  hy2_expert_print_group "BUILDABLE NOW" "buildable" "$traffic" "$listen_port" "$destination_listening" 0
+  hy2_expert_print_group "MANUAL / IMPLEMENTED PRESETS" "manual" "$traffic" "$listen_port" "$destination_listening" 0
+  hy2_expert_print_group "PRIORITY NEXT" "priority" "$traffic" "$listen_port" "$destination_listening" 0
+  hy2_expert_print_group "PLANNED / EXTERNAL REQUIRED" "planned" "$traffic" "$listen_port" "$destination_listening" 0
+  hy2_expert_print_group "EMERGENCY / HARD MODE" "emergency" "$traffic" "$listen_port" "$destination_listening" 0
+  hy2_expert_print_group "APPLICATION-SPECIFIC PRESETS" "app" "$traffic" "$listen_port" "$destination_listening" 0
+  echo
+  echo "Full ranking includes all registered engines."
+}
+
+hy2_expert_print_compact_ranking() {
+  local traffic="$1"
+  local listen_port="$2"
+  local destination_listening="$3"
+
+  hy2_expert_print_group "COMPACT RANKING" "compact" "$traffic" "$listen_port" "$destination_listening" 12
+}
+
+hy2_expert_recommended_engine_id() {
+  case "$1" in
+    tcp) printf 'waterwall_reverse_tls\n' ;;
+    udp|both|*) printf 'hysteria2_obfs_udp\n' ;;
+  esac
+}
+
+hy2_expert_tcp_recommended_engine_id() {
+  printf 'waterwall_reverse_tls\n'
+}
+
+hy2_expert_print_recommendation_lines() {
+  local row="$1"
+  local score engine_id name _status speed risk iran_fit ready _category _note _traffic _use_case deps_ok port_ok
+
+  hy2_split_pipe_row "$row"
+  score="${HY2_PIPE_FIELDS[0]:-}"
+  engine_id="${HY2_PIPE_FIELDS[1]:-}"
+  name="${HY2_PIPE_FIELDS[2]:-}"
+  _status="${HY2_PIPE_FIELDS[3]:-}"
+  speed="${HY2_PIPE_FIELDS[4]:-}"
+  risk="${HY2_PIPE_FIELDS[5]:-}"
+  iran_fit="${HY2_PIPE_FIELDS[6]:-}"
+  ready="${HY2_PIPE_FIELDS[7]:-}"
+  _category="${HY2_PIPE_FIELDS[8]:-}"
+  _note="${HY2_PIPE_FIELDS[9]:-}"
+  _traffic="${HY2_PIPE_FIELDS[10]:-}"
+  _use_case="${HY2_PIPE_FIELDS[11]:-}"
+  deps_ok="${HY2_PIPE_FIELDS[12]:-}"
+  port_ok="${HY2_PIPE_FIELDS[13]:-}"
+  echo "  Engine:          $name"
+  echo "  Engine ID:       $engine_id"
+  echo "  Buildable now:   $(hy2_expert_ready_text "$ready")"
+  echo "  Iran fit:        $iran_fit"
+  echo "  Speed:           $speed"
+  echo "  Detection risk:  $(hy2_expert_summary_risk_text "$risk")"
+  echo "  Score:           $score"
+  echo
+  echo "Why selected:"
+  if [[ "$engine_id" == "hysteria2_obfs_udp" ]]; then
+    echo "  - Proven in this project."
+    if [[ "$deps_ok" == "true" ]]; then
+      echo "  - Dependencies are available."
+    else
+      echo "  - Dependencies can be installed before build."
+    fi
+    if [[ "$port_ok" == "free" ]]; then
+      echo "  - Entry port is free."
+    else
+      echo "  - Entry port needs review before build."
+    fi
+    echo "  - Supports generic UDP forwarding."
+    echo "  - Destination service is not required before tunnel build."
+  elif [[ "$ready" == "NEXT" ]]; then
+    echo "  - Priority-next engine for this traffic type."
+    echo "  - Lower detection-risk profile by metadata."
+    echo "  - Registered for the next implementation PR."
+  else
+    echo "  - Highest matching registry candidate for this traffic type."
+  fi
+}
+
+hy2_expert_print_scan_summary_card() {
+  local traffic="$1"
+  local iran_host="$2"
+  local iran_port="$3"
+  local foreign_host="$4"
+  local dest_host="$5"
+  local dest_port="$6"
+  local udp_status="$7"
+  local tcp_status="$8"
+  local destination_for_score="$9"
+  local traffic_label rec_id rec_row udp_row tcp_row
+
+  case "$traffic" in
+    udp) traffic_label="UDP" ;;
+    tcp) traffic_label="TCP" ;;
+    both) traffic_label="Both" ;;
+    *) traffic_label="$traffic" ;;
+  esac
+
+  line
+  echo "AUTO TUNNEL EXPERT - SCAN RESULT"
+  line
+  echo
+  echo "Route:"
+  echo "  Iran Entry:      $iran_host:$iran_port"
+  echo "  Foreign Exit:    $foreign_host"
+  echo "  Destination:     $dest_host:$dest_port"
+  echo "  Traffic:         $traffic_label"
+  echo
+  echo "Destination:"
+  echo "  UDP listener:    $(hy2_destination_status_label "$udp_status")"
+  echo "  TCP listener:    $(hy2_destination_status_label "$tcp_status")"
+  echo "  Note: Destination app can be configured later."
+  if [[ "$udp_status" == "false" || "$tcp_status" == "false" ]]; then
+    echo "  Destination service is not listening yet."
+    echo "  This is OK if the tunnel is being created before the app is configured."
+  fi
+  echo
+
+  if [[ "$traffic" == "both" ]]; then
+    hy2_expert_prepare_score_cache "udp" "$iran_port" "$udp_status"
+    udp_row="$(hy2_expert_score_for_engine "$(hy2_expert_recommended_engine_id udp)" "udp" "$iran_port" "$udp_status")"
+    hy2_expert_prepare_score_cache "tcp" "$iran_port" "$tcp_status"
+    tcp_row="$(hy2_expert_score_for_engine "$(hy2_expert_tcp_recommended_engine_id)" "tcp" "$iran_port" "$tcp_status")"
+    echo "Recommended:"
+    echo "  Best UDP:"
+    hy2_expert_print_recommendation_lines "$udp_row" | sed 's/^/    /'
+    echo
+    echo "  Best TCP:"
+    hy2_expert_print_recommendation_lines "$tcp_row" | sed 's/^/    /'
+    echo
+    echo "Overall:"
+    echo "  Build UDP now with Hysteria2 OBFS UDP."
+    echo "  TCP engine implementation is next."
+    echo
+    echo "Next exact action:"
+    echo "  Auto Tunnel Expert"
+    echo "  -> Build Selected Tunnel From Scan Result"
+    echo "  -> hysteria2_obfs_udp"
+  else
+    rec_id="$(hy2_expert_recommended_engine_id "$traffic")"
+    hy2_expert_prepare_score_cache "$traffic" "$iran_port" "$destination_for_score"
+    rec_row="$(hy2_expert_score_for_engine "$rec_id" "$traffic" "$iran_port" "$destination_for_score")"
+    echo "Recommended:"
+    hy2_expert_print_recommendation_lines "$rec_row"
+    echo
+    echo "Next exact action:"
+    echo "  Auto Tunnel Expert"
+    echo "  -> Build Selected Tunnel From Scan Result"
+    echo "  -> $rec_id"
+  fi
+  echo
+  line
+}
+
+hy2_expert_print_scan_bundle() {
+  local role="$1"
+  local traffic="$2"
+  local profile="$3"
+  local iran_host="$4"
+  local iran_port="$5"
+  local foreign_host="$6"
+  local dest_host="$7"
+  local dest_port="$8"
+  local bundle path
+
+  [[ "$role" == "foreign" ]] || return 0
+  bundle="VIPTRUE_SCAN_BUNDLE=v1;role=foreign-probe;traffic=$traffic;profile=$profile;iran_host=$iran_host;iran_port=$iran_port;foreign_host=$foreign_host;dest_host=$dest_host;dest_port=$dest_port;suggested_engine=hysteria2_obfs_udp"
+  path="$(hy2_expert_save_bundle_file "scan" "$profile" "$bundle")"
+  echo
+  echo -e "${YELLOW}Pairing Mode Bundle${NC}"
+  echo "$bundle"
+  echo
+  echo "Bundle saved to:"
+  echo "  $path"
+  echo
+  echo "Copy with:"
+  echo "  cat $path"
+  echo
+  echo "This scan bundle does not contain auth/OBFS secrets."
+}
+
+hy2_expert_scan_options_menu() {
+  local traffic="$1"
+  local iran_port="$2"
+  local dest_port="$3"
+  local destination_for_score="$4"
+  local destination_for_proof="$5"
+  local recommended_engine="$6"
+  local choice
+
+  while true; do
+    echo
+    echo -e "${CYAN}Options${NC}"
+    echo "1) Build recommended engine"
+    echo "2) Show compact ranking"
+    echo "3) Show full 49-engine ranking"
+    echo "4) Show only buildable engines"
+    echo "5) Show priority-next engines"
+    echo "6) Show emergency/hard-mode engines"
+    echo "7) Print forwarding proof commands"
+    echo "0) Back"
+    echo
+    read -r -p "Select option [0-7]: " choice
+
+    case "$choice" in
+      1) hy2_expert_build_engine_by_id "$recommended_engine" ;;
+      2) hy2_expert_print_compact_ranking "$traffic" "$iran_port" "$destination_for_score"; pause ;;
+      3) hy2_expert_print_full_ranking "$traffic" "$iran_port" "$destination_for_score"; pause ;;
+      4) hy2_expert_print_group "BUILDABLE NOW" "buildable" "$traffic" "$iran_port" "$destination_for_score" 0; pause ;;
+      5) hy2_expert_print_group "PRIORITY NEXT" "priority" "$traffic" "$iran_port" "$destination_for_score" 0; pause ;;
+      6) hy2_expert_print_group "EMERGENCY / HARD MODE" "emergency" "$traffic" "$iran_port" "$destination_for_score" 0; pause ;;
+      7) hy2_expert_print_probe_commands "$traffic" "$iran_port" "$dest_port" "$destination_for_proof"; pause ;;
+      0) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
 }
 
 hy2_expert_scan_best_tunnel() {
   local role_choice role traffic_choice traffic bundle iran_host iran_port foreign_host dest_host dest_port profile
-  local dest_listener_output destination_listening="unknown" default_foreign default_iran default_dest default_dest_port
+  local dest_listener_output udp_status="unknown" tcp_status="unknown" destination_for_score="unknown" destination_for_proof="unknown"
+  local default_foreign default_iran default_dest default_dest_port recommended_engine
 
   title
   echo -e "${CYAN}Auto Tunnel Expert > Scan Best Tunnel Between Two Servers${NC}"
@@ -2282,42 +2970,67 @@ hy2_expert_scan_best_tunnel() {
   fi
 
   if [[ "$dest_host" == "127.0.0.1" || "$dest_host" == "localhost" || "$dest_host" == "0.0.0.0" ]]; then
-    if [[ "$traffic" == "tcp" ]]; then
-      dest_listener_output="$(list_listeners tcp "$dest_port")"
-    else
+    if [[ "$traffic" == "udp" || "$traffic" == "both" ]]; then
       dest_listener_output="$(list_listeners udp "$dest_port")"
+      if [[ -n "$dest_listener_output" ]]; then
+        udp_status="true"
+      else
+        udp_status="false"
+      fi
     fi
-    if [[ -n "$dest_listener_output" ]]; then
-      destination_listening="true"
-      pass_line "destination listener" "$dest_host:$dest_port appears locally"
-    else
-      destination_listening="false"
-      warn_line "destination listener" "$dest_host:$dest_port not detected; scanner will continue because the service may be configured later"
+    if [[ "$traffic" == "tcp" || "$traffic" == "both" ]]; then
+      dest_listener_output="$(list_listeners tcp "$dest_port")"
+      if [[ -n "$dest_listener_output" ]]; then
+        tcp_status="true"
+      else
+        tcp_status="false"
+      fi
     fi
-  else
-    warn_line "destination listener" "not locally checkable for $dest_host:$dest_port; scanner will continue"
   fi
+
+  case "$traffic" in
+    udp)
+      destination_for_score="$udp_status"
+      destination_for_proof="$udp_status"
+      ;;
+    tcp)
+      destination_for_score="$tcp_status"
+      destination_for_proof="$tcp_status"
+      ;;
+    both)
+      if [[ "$udp_status" == "false" || "$tcp_status" == "false" ]]; then
+        destination_for_score="false"
+      elif [[ "$udp_status" == "true" || "$tcp_status" == "true" ]]; then
+        destination_for_score="true"
+      else
+        destination_for_score="unknown"
+      fi
+      destination_for_proof="$tcp_status"
+      ;;
+  esac
+
+  recommended_engine="$(hy2_expert_recommended_engine_id "$traffic")"
+  hy2_expert_print_scan_summary_card \
+    "$traffic" "$iran_host" "$iran_port" "$foreign_host" "$dest_host" "$dest_port" \
+    "$udp_status" "$tcp_status" "$destination_for_score"
+  hy2_expert_print_default_scan_view "$traffic" "$iran_port" "$destination_for_score"
+  hy2_expert_print_scan_bundle "$role" "$traffic" "$profile" "$iran_host" "$iran_port" "$foreign_host" "$dest_host" "$dest_port"
 
   echo
-  echo -e "${YELLOW}Pairing Mode${NC}"
-  if [[ "$role" == "foreign" ]]; then
-    echo "Foreign Probe Agent / Bundle Generator output:"
-    echo "VIPTRUE_SCAN_BUNDLE=v1;role=foreign-probe;traffic=$traffic;profile=$profile;iran_host=$iran_host;iran_port=$iran_port;foreign_host=$foreign_host;dest_host=$dest_host;dest_port=$dest_port;suggested_engine=hysteria2_obfs_udp"
-    echo "Paste this bundle on the Iran/Entry server scanner. It contains no auth or OBFS secret."
-  else
-    echo "Iran scanner mode will rank engines from metadata and local checks. Foreign reachability is proven after build/test."
-  fi
-
-  hy2_expert_print_probe_commands "$traffic" "$iran_port" "$dest_port" "$destination_listening"
-  hy2_expert_scan_ranked_engines "$traffic" "$iran_port" "$destination_listening"
+  echo "Forwarding proof commands are available."
+  echo "Select option 7 to print them."
+  echo
+  echo "SSH credentials were not collected."
+  echo "No tunnel was built yet."
 
   set_summary \
-    "Adaptive registry scan for $traffic traffic, role $role, profile $profile." \
-    "Scanner result is a buildability/risk ranking; remote forwarding still needs build and probe proof." \
-    "Use Build Selected Tunnel From Scan Result for hysteria2_obfs_udp, or Manual Tunnel Lab for scaffolded engines." \
-    "No SSH credentials were collected and no tunnel changes were made."
+    "Adaptive scan completed for $traffic traffic." \
+    "Recommended engine: $recommended_engine" \
+    "Build recommended engine or inspect full ranking." \
+    "Pairing Mode used. SSH credentials were not collected." \
+    "No tunnel was built yet."
   print_summary
-  pause
+  hy2_expert_scan_options_menu "$traffic" "$iran_port" "$dest_port" "$destination_for_score" "$destination_for_proof" "$recommended_engine"
 }
 
 hy2_expert_validate_generic_bundle() {
@@ -2376,6 +3089,7 @@ hy2_expert_validate_generic_bundle() {
 hy2_expert_build_hysteria_generic_foreign() {
   local listen_port recommended_port foreign_host dest_host dest_port profile service_name profile_dir
   local config_path cert_path key_path auth_pass obfs_pass meta_path confirm start_now listener_output score=0
+  local tunnel_bundle bundle_path
 
   title
   echo -e "${CYAN}Auto Tunnel Expert > Build Hysteria2 OBFS UDP Generic Forward > Foreign${NC}"
@@ -2487,7 +3201,16 @@ hy2_expert_build_hysteria_generic_foreign() {
 
   echo
   warn_line "VIPTRUE_TUNNEL_BUNDLE" "contains operational secrets; do not share publicly or commit it"
-  echo "VIPTRUE_TUNNEL_BUNDLE=v2;engine=hysteria2_obfs_udp;type=generic-udp-forward;profile=$profile;foreign_host=$foreign_host;hy2_port=$listen_port;dest_host=$dest_host;dest_port=$dest_port;sni=$HY2_DEFAULT_LEGACY_SNI;insecure=true;auth=$auth_pass;obfs=$obfs_pass;masq=$HY2_DEFAULT_MASQUERADE_URL"
+  echo "WARNING: This bundle contains operational secrets. Do not share publicly."
+  tunnel_bundle="VIPTRUE_TUNNEL_BUNDLE=v2;engine=hysteria2_obfs_udp;type=generic-udp-forward;profile=$profile;foreign_host=$foreign_host;hy2_port=$listen_port;dest_host=$dest_host;dest_port=$dest_port;sni=$HY2_DEFAULT_LEGACY_SNI;insecure=true;auth=$auth_pass;obfs=$obfs_pass;masq=$HY2_DEFAULT_MASQUERADE_URL"
+  bundle_path="$(hy2_expert_save_bundle_file "tunnel" "$profile" "$tunnel_bundle")"
+  echo "$tunnel_bundle"
+  echo
+  echo "Bundle saved to:"
+  echo "  $bundle_path"
+  echo
+  echo "Copy with:"
+  echo "  cat $bundle_path"
   echo
   echo "Score: $score"
   echo "What was tested: local service/listener checks only."
@@ -2603,8 +3326,30 @@ hy2_expert_build_hysteria_generic_iran() {
   pause
 }
 
-hy2_expert_build_selected_tunnel() {
+hy2_expert_build_engine_by_id() {
   local engine_id side_choice
+
+  engine_id="$1"
+  if [[ "$engine_id" != "hysteria2_obfs_udp" ]]; then
+    warn_line "$engine_id" "Engine is registered but not implemented yet. Use Manual Tunnel Lab or wait for next engine PR."
+    pause
+    return
+  fi
+
+  echo
+  echo "Build side:"
+  echo "1) Foreign / Exit side bundle generator"
+  echo "2) Iran / Entry side from bundle"
+  read -r -p "Select side [1-2]: " side_choice
+  case "$side_choice" in
+    1|"") hy2_expert_build_hysteria_generic_foreign ;;
+    2) hy2_expert_build_hysteria_generic_iran "51822" ;;
+    *) fail_line "build side" "choose 1 or 2"; pause ;;
+  esac
+}
+
+hy2_expert_build_selected_tunnel() {
+  local engine_id
 
   title
   echo -e "${CYAN}Auto Tunnel Expert > Build Selected Tunnel From Scan Result${NC}"
@@ -2623,16 +3368,7 @@ hy2_expert_build_selected_tunnel() {
     return
   fi
 
-  echo
-  echo "Build side:"
-  echo "1) Foreign / Exit side bundle generator"
-  echo "2) Iran / Entry side from bundle"
-  read -r -p "Select side [1-2]: " side_choice
-  case "$side_choice" in
-    1|"") hy2_expert_build_hysteria_generic_foreign ;;
-    2) hy2_expert_build_hysteria_generic_iran "51822" ;;
-    *) fail_line "build side" "choose 1 or 2"; pause ;;
-  esac
+  hy2_expert_build_engine_by_id "$engine_id"
 }
 
 hy2_expert_add_foreign_to_iran() {

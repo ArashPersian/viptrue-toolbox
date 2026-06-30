@@ -51,12 +51,38 @@ server point of view, and an optional profile name.
 Pairing Mode is implemented first:
 
 1. Run `Scan Best Tunnel Between Two Servers` on the Foreign / Exit server to
-   print a `VIPTRUE_SCAN_BUNDLE` with no runtime auth secrets.
+   print and save a `VIPTRUE_SCAN_BUNDLE` with no runtime auth secrets.
 2. Paste that bundle on the Iran / Entry scanner, or enter values manually.
-3. Review the ranked engine table.
+3. Review the scan summary card, recommended engine, and compact grouped
+   ranking.
 4. Use `Build Selected Tunnel From Scan Result` for the implemented
    `hysteria2_obfs_udp` generic UDP forward. Other engines are registered and
    scaffolded for later PRs.
+
+Scan output is intentionally compact by default. It shows:
+
+- the scanned route,
+- destination listener status,
+- the recommended engine and exact next action,
+- top buildable/manual/priority-next engines,
+- short summaries for planned, emergency, and application-specific engines.
+
+Use the scan options menu to show the compact ranking, full 49-engine ranking,
+buildable-only list, priority-next engines, emergency/hard-mode engines, or
+forwarding proof commands. Proof commands are not printed by default.
+
+Readiness labels are terminal-safe:
+
+- `YES`: buildable now from Auto Tunnel Expert
+- `MAN`: implemented manual preset
+- `NEXT`: priority-next implementation
+- `PLAN`: planned or scaffolded
+- `EXT`: external engine required
+- `EMRG`: emergency/hard-mode only
+
+If the destination listener is missing, the scan warns once in the summary
+card. That is not fatal when the tunnel is being created before the destination
+application is configured.
 
 The implemented generic builder creates managed Hysteria2 OBFS UDP forwards
 under `/etc/viptrue-hy2-wg-forward/auto/`, keeps the proven salamander OBFS,
@@ -65,7 +91,8 @@ and supports one Iran entry server mapping to multiple foreign servers by using
 one Iran listen port per foreign mapping.
 
 `VIPTRUE_TUNNEL_BUNDLE` contains operational auth/OBFS secrets. Treat it like a
-password: do not paste it into public chats, logs, tickets, or commits.
+password: do not paste it into public chats, logs, tickets, or commits. The
+tool prints one copy-friendly line and saves it to a local bundle file.
 
 Manual Tunnel Lab keeps the detailed diagnostics and expert tools for preflight
 checks, ports, quality tests, GRE, WireGuard, Hysteria2, reverse TLS/SNI

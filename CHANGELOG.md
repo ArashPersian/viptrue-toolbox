@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.2 - Unreleased
+
+- Polished Auto Tunnel Expert scan output with a scan summary card before any
+  ranking table.
+- Replaced the default 49-engine scan table with compact grouped output for
+  buildable, manual, priority-next, planned/external, emergency, and
+  application-specific engines.
+- Added scan options for building the recommendation, compact ranking, full
+  ranking, buildable-only, priority-next, emergency/hard-mode, and optional
+  forwarding proof commands.
+- Added terminal-safe readiness labels: `YES`, `MAN`, `NEXT`, `PLAN`, `EXT`,
+  and `EMRG`.
+- Saved scan bundles and v2 tunnel bundles to copy-friendly files while
+  distinguishing no-secret scan bundles from operational-secret tunnel bundles.
+- Updated scan diagnostics summary wording to show checked scope, result,
+  tunnel state, next action, and server-side action.
+
 ## 0.4.1 - Unreleased
 
 - Added Auto Tunnel Expert as the top Tunnel Manager product path with scanner,
