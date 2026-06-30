@@ -21,9 +21,35 @@ The urgent focus is the Tunnel Manager under:
 Main Menu -> Work -> Utility Tools -> Tunnel Manager
 ```
 
-The Tunnel Manager now prioritizes safe diagnostics and command previews for
-preflight checks, ports, quality tests, GRE, WireGuard, Hysteria2, and reverse
-TLS/SNI planning.
+The Tunnel Manager is split into product-oriented and lab-oriented paths:
+
+```text
+Tunnel Manager -> Auto Tunnel Wizard
+Tunnel Manager -> Manual Tunnel Lab
+Tunnel Manager -> Manage Existing Tunnels
+Tunnel Manager -> Test Existing Tunnels
+```
+
+Use Auto Tunnel Wizard for the proven production path first. It uses a safe
+two-step pairing-code workflow instead of storing SSH keys or secrets:
+
+1. Run `Foreign/Exit server setup` on the foreign WireGuard host. It creates
+   the proven Hysteria2 OBFS salamander + Bing masquerade profile, starts a
+   dedicated `viptrue-auto-hy2-foreign-*` service, checks service/listener
+   health, and prints a one-line `VIPTRUE_TUNNEL_BUNDLE`.
+2. Run `Iran/Entry server setup` on the Iran entry server. Paste the bundle,
+   enter the Iran local UDP listen port and the real inbound public IP/domain,
+   then start the dedicated `viptrue-auto-hy2-iran-*` service.
+3. Set PasarGuard WireGuard endpoint to the printed
+   `<IRAN_PUBLIC_ENDPOINT>:<IRAN_PORT>` value.
+
+`VIPTRUE_TUNNEL_BUNDLE` contains operational auth/OBFS secrets. Treat it like a
+password: do not paste it into public chats, logs, tickets, or commits.
+
+Manual Tunnel Lab keeps the detailed diagnostics and expert tools for preflight
+checks, ports, quality tests, GRE, WireGuard, Hysteria2, reverse TLS/SNI
+planning, legacy proven mode, Iran server mode, profile management, and
+synthetic WireGuard tests.
 
 For PasarGuard WireGuard nodes, use:
 

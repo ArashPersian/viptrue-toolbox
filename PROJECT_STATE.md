@@ -1,9 +1,9 @@
 # Project State
 
-Version: 0.3.9
-Branch: fasttrack/synthetic-test-dependency-installer
-Base commit: c5d62d0 Merge pull request #8 from ArashPersian/fasttrack/hysteria-wg-synthetic-test
-Commit: 098f12d Add synthetic test dependency installer
+Version: 0.4.0
+Branch: fasttrack/auto-tunnel-wizard
+Base commit: a6a4d0d Merge pull request #9 from ArashPersian/fasttrack/synthetic-test-dependency-installer
+Commit: 9a29a4f Add Auto Tunnel Wizard
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
@@ -12,22 +12,26 @@ Release status: no release or tag planned for this batch
 Local checks:
 
 - Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
-- Passed: menu smoke test to Synthetic WireGuard Handshake Test
-- Passed: missing `wg` dependency prompt smoke test with controlled PATH and declined install
-- Passed: public target IP warning smoke test
-- Passed: missing `ip` / `iproute2` prompt smoke test with declined install
-- Passed: static check for exact `apt-get update && apt-get install -y ...` installer path
+- Passed: menu smoke to `Tunnel Manager -> Auto Tunnel Wizard`
+- Passed: menu smoke to `Auto Tunnel Wizard -> Foreign/Exit server setup` with cancel before writes
+- Passed: menu smoke to `Auto Tunnel Wizard -> Iran/Entry server setup` with valid bundle and cancel before writes
+- Passed: menu smoke to `Tunnel Manager -> Manual Tunnel Lab`
+- Passed: bundle parser tests for valid bundle, missing field, invalid port, and forbidden Hysteria UDP `443`
+- Passed: Iran endpoint prompt test showing detected outbound IP hint, local IPv4 hints, and explicit endpoint entry warning
+- Passed: existing tunnel preservation/static check for same-profile-only service stop behavior and no unrelated port stop
+- Passed: secret handling/static check for bundle warning and no private key printing
+- Passed: synthetic test integration smoke for bundle handoff and `VIPTRUE_TEST_PEER_BUNDLE` guidance
 - Passed: `git diff --check`
 - Not run locally: ShellCheck is not installed in PowerShell or Git Bash on this Windows workspace
 
 ## Remaining Issues
 
-- Synthetic WireGuard handshake execution still requires disposable Iran and
-  foreign VPS validation with real `wg`, `ip`, Hysteria2 services, and UDP
-  reachability.
-- Interactive package installation is apt-based and only runs after explicit
-  confirmation on the target server.
+- Auto Wizard is the pairing-code implementation. SSH-driven one-click
+  cross-server orchestration is intentionally not included in this PR.
+- Real scoring for latency, packet loss, and synthetic handshake quality still
+  requires disposable Iran and foreign VPS validation with live Hysteria2 and
+  WireGuard services.
 
 ## Next Exact Step
 
-Run local validation, open the dependency installer PR, and review GitHub ShellCheck.
+Run local validation, open the Auto Tunnel Wizard PR, and review GitHub ShellCheck.

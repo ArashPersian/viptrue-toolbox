@@ -15,7 +15,12 @@ HY2_WG_CLIENT_DIR="$HY2_WG_DIR/clients"
 HY2_WG_CERT_DIR="$HY2_WG_DIR/certs"
 HY2_WG_LEGACY_DIR="$HY2_WG_DIR/legacy"
 HY2_WG_ARCHIVE_DIR="$HY2_WG_DIR/archive"
+HY2_WG_AUTO_DIR="$HY2_WG_DIR/auto"
+HY2_WG_AUTO_FOREIGN_DIR="$HY2_WG_AUTO_DIR/foreign"
+HY2_WG_AUTO_IRAN_DIR="$HY2_WG_AUTO_DIR/iran"
 HY2_WG_SERVICE_PREFIX="viptrue-hy2-wg"
+HY2_AUTO_FOREIGN_SERVICE_PREFIX="viptrue-auto-hy2-foreign"
+HY2_AUTO_IRAN_SERVICE_PREFIX="viptrue-auto-hy2-iran"
 HY2_LEGACY_DIR="${VIPTRUE_HYSTERIA_LEGACY_DIR:-/etc/hysteria}"
 HY2_LEGACY_CONFIG="$HY2_LEGACY_DIR/config.yaml"
 HY2_LEGACY_CERT="$HY2_LEGACY_DIR/server.crt"
@@ -934,8 +939,8 @@ ensure_hysteria2_ready() {
 }
 
 ensure_hy2_wg_dirs() {
-  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_LEGACY_DIR" "$HY2_WG_ARCHIVE_DIR"
-  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_LEGACY_DIR" "$HY2_WG_ARCHIVE_DIR" 2>/dev/null || true
+  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_LEGACY_DIR" "$HY2_WG_ARCHIVE_DIR" "$HY2_WG_AUTO_FOREIGN_DIR" "$HY2_WG_AUTO_IRAN_DIR"
+  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_LEGACY_DIR" "$HY2_WG_ARCHIVE_DIR" "$HY2_WG_AUTO_DIR" "$HY2_WG_AUTO_FOREIGN_DIR" "$HY2_WG_AUTO_IRAN_DIR" 2>/dev/null || true
 }
 
 backup_existing_file() {
@@ -1493,7 +1498,7 @@ hy2_wg_write_client_config() {
   local obfs_pass="$8"
   local tls_sni="$9"
   local insecure_tls="${10}"
-  local config_path="$HY2_WG_CLIENT_DIR/$profile.yaml"
+  local config_path="${11:-$HY2_WG_CLIENT_DIR/$profile.yaml}"
   local server_q auth_q obfs_q sni_q
 
   server_q="$(yaml_quote "$foreign_host:$foreign_port")"
@@ -1526,6 +1531,735 @@ hy2_wg_write_client_config() {
   chmod 600 "$config_path"
 
   HY2_WRITTEN_CONFIG="$config_path"
+}
+
+hy2_auto_service_name() {
+  local role="$1"
+  local profile="$2"
+
+  case "$role" in
+    foreign) printf '%s-%s.service\n' "$HY2_AUTO_FOREIGN_SERVICE_PREFIX" "$profile" ;;
+    iran) printf '%s-%s.service\n' "$HY2_AUTO_IRAN_SERVICE_PREFIX" "$profile" ;;
+  esac
+}
+
+hy2_auto_foreign_config_path() {
+  local profile="$1"
+
+  printf '%s/%s/config.yaml\n' "$HY2_WG_AUTO_FOREIGN_DIR" "$profile"
+}
+
+hy2_auto_iran_config_path() {
+  local profile="$1"
+
+  printf '%s/%s.yaml\n' "$HY2_WG_AUTO_IRAN_DIR" "$profile"
+}
+
+hy2_auto_meta_path() {
+  local role="$1"
+  local profile="$2"
+
+  if [[ "$role" == "foreign" ]]; then
+    printf '%s/%s/profile.meta\n' "$HY2_WG_AUTO_FOREIGN_DIR" "$profile"
+  else
+    printf '%s/%s.meta\n' "$HY2_WG_AUTO_IRAN_DIR" "$profile"
+  fi
+}
+
+hy2_auto_random_secret() {
+  local secret
+
+  if have_cmd openssl; then
+    secret="$(openssl rand -base64 32 2>/dev/null | tr '+/' '-_' | tr -d '=[:space:]' | cut -c1-32)"
+  else
+    secret="$(date +%s%N | sha256sum 2>/dev/null | awk '{print $1}' | cut -c1-32)"
+  fi
+  printf '%s\n' "$secret"
+}
+
+hy2_auto_detect_wg_iface() {
+  local interfaces iface
+
+  if have_cmd wg; then
+    interfaces="$(wg show interfaces 2>/dev/null || true)"
+    for iface in $interfaces; do
+      [[ "$iface" == "wg0" ]] && { printf 'wg0\n'; return; }
+    done
+    for iface in $interfaces; do
+      [[ -n "$iface" ]] && { printf '%s\n' "$iface"; return; }
+    done
+  fi
+
+  printf 'wg0\n'
+}
+
+hy2_auto_detect_wg_port() {
+  local iface="$1"
+  local port
+
+  if have_cmd wg; then
+    port="$(wg show "$iface" listen-port 2>/dev/null | head -n 1 || true)"
+    if valid_port "$port"; then
+      printf '%s\n' "$port"
+      return
+    fi
+  fi
+
+  printf '51820\n'
+}
+
+hy2_auto_candidate_port() {
+  local port
+  local candidates=(2087 2086 8443 8080 2096 62000)
+
+  for port in "${candidates[@]}"; do
+    [[ "$port" == "443" ]] && continue
+    if [[ -z "$(list_listeners udp "$port")" ]]; then
+      printf '%s\n' "$port"
+      return
+    fi
+  done
+
+  printf '2087\n'
+}
+
+hy2_auto_print_recommendation() {
+  local port="$1"
+  local score=0
+  local reasons=()
+
+  [[ "$port" != "443" ]] && score=$((score + 20))
+  if [[ -z "$(list_listeners udp "$port")" ]]; then
+    score=$((score + 20))
+    reasons+=("UDP $port is free locally")
+  else
+    reasons+=("UDP $port already has a local listener")
+  fi
+  score=$((score + 30))
+  reasons+=("proven working profile: Hysteria2 OBFS salamander + Bing masquerade + self-signed/insecure TLS")
+  reasons+=("lower detection risk wording only; no bypass success is promised")
+
+  echo
+  echo -e "${YELLOW}Recommended tunnel profile${NC}"
+  echo "Profile: Hysteria2 OBFS salamander + Bing masquerade + self-signed/insecure TLS"
+  echo "Recommended Hysteria UDP port: $port"
+  echo "Score: $score"
+  echo "Why selected:"
+  printf '  - %s\n' "${reasons[@]}"
+  echo "What was tested:"
+  echo "  - local UDP port availability"
+  echo "What was not proven:"
+  echo "  - remote reachability, censorship behavior, and WireGuard authentication before setup tests run"
+}
+
+hy2_auto_bundle_value() {
+  local bundle="$1"
+  local key="$2"
+  local pair pair_key pair_value
+  local -a fields=()
+
+  bundle="${bundle#VIPTRUE_TUNNEL_BUNDLE=}"
+  bundle="${bundle#VIPTRUE_TEST_PEER_BUNDLE=}"
+  IFS=';' read -r -a fields <<< "$bundle"
+  for pair in "${fields[@]}"; do
+    pair_key="${pair%%=*}"
+    pair_value="${pair#*=}"
+    if [[ "$pair_key" == "$key" ]]; then
+      printf '%s\n' "$pair_value"
+      return 0
+    fi
+  done
+}
+
+hy2_auto_validate_tunnel_bundle() {
+  local bundle="$1"
+  local type foreign_host hy2_port wg_host wg_port sni insecure auth obfs
+
+  type="$(hy2_auto_bundle_value "$bundle" "type")"
+  foreign_host="$(hy2_auto_bundle_value "$bundle" "foreign_host")"
+  hy2_port="$(hy2_auto_bundle_value "$bundle" "hy2_port")"
+  wg_host="$(hy2_auto_bundle_value "$bundle" "wg_host")"
+  wg_port="$(hy2_auto_bundle_value "$bundle" "wg_port")"
+  sni="$(hy2_auto_bundle_value "$bundle" "sni")"
+  insecure="$(hy2_auto_bundle_value "$bundle" "insecure")"
+  auth="$(hy2_auto_bundle_value "$bundle" "auth")"
+  obfs="$(hy2_auto_bundle_value "$bundle" "obfs")"
+
+  case "$type" in
+    udp-wg-hy2|udp-generic-hy2) ;;
+    *) fail_line "bundle type" "expected udp-wg-hy2 or udp-generic-hy2"; return 1 ;;
+  esac
+
+  if [[ -z "${foreign_host// /}" ]]; then
+    fail_line "bundle foreign_host" "missing"
+    return 1
+  fi
+  if ! valid_port "$hy2_port"; then
+    fail_line "bundle hy2_port" "invalid"
+    return 1
+  fi
+  if [[ "$hy2_port" == "443" ]]; then
+    fail_line "bundle hy2_port" "UDP port 443 is forbidden for Hysteria2"
+    return 1
+  fi
+  if [[ -z "${wg_host// /}" ]]; then
+    fail_line "bundle wg_host" "missing"
+    return 1
+  fi
+  if ! valid_port "$wg_port"; then
+    fail_line "bundle wg_port" "invalid"
+    return 1
+  fi
+  if [[ -z "${sni// /}" || "$insecure" != "true" || -z "${auth// /}" || -z "${obfs// /}" ]]; then
+    fail_line "bundle secrets/TLS" "missing sni, insecure=true, auth, or obfs"
+    return 1
+  fi
+
+  pass_line "bundle validation" "$type for $foreign_host:$hy2_port"
+}
+
+hy2_auto_endpoint_hints() {
+  local outbound local_ips route_src
+
+  echo
+  echo -e "${YELLOW}Iran public endpoint hints${NC}"
+  outbound="$(detect_public_ip)"
+  echo "Detected outbound public IP hint: $outbound"
+  if have_cmd hostname; then
+    local_ips="$(hostname -I 2>/dev/null | tr -s ' ' || true)"
+    echo "Local IPv4 hints: ${local_ips:-unknown}"
+  fi
+  if have_cmd ip; then
+    route_src="$(ip route get 1.1.1.1 2>/dev/null | sed -nE 's/.* src ([0-9.]+).*/\1/p' | head -n 1)"
+    echo "Default-route source hint: ${route_src:-unknown}"
+  fi
+  warn_line "endpoint confirmation" "enter the real inbound public IP/domain clients will use; do not rely only on api.ipify"
+}
+
+hy2_auto_service_logs_contain() {
+  local service_name="$1"
+  local pattern="$2"
+
+  have_cmd journalctl || return 1
+  journalctl -u "$service_name" -n 120 --no-pager 2>/dev/null | grep -Eiq "$pattern"
+}
+
+hy2_auto_quick_health_test() {
+  local service_name="$1"
+  local iran_port="$2"
+  local score=0
+  local listener_output
+
+  echo
+  line
+  echo -e "${CYAN}Auto Quick Health Test${NC}"
+
+  if hy2_wg_service_active "$service_name"; then
+    score=$((score + 30))
+    pass_line "service active" "$service_name"
+  else
+    fail_line "service active" "$service_name inactive or systemctl unavailable"
+  fi
+
+  listener_output="$(list_listeners udp "$iran_port")"
+  if [[ -n "$listener_output" ]]; then
+    score=$((score + 20))
+    pass_line "local listener active" "UDP $iran_port"
+  else
+    fail_line "local listener active" "UDP $iran_port not detected"
+  fi
+
+  if hy2_auto_service_logs_contain "$service_name" 'connected to server'; then
+    score=$((score + 25))
+    pass_line "connected to server log" "found"
+  else
+    warn_line "connected to server log" "not found in recent journal"
+  fi
+
+  if hy2_auto_service_logs_contain "$service_name" 'UDP forwarding listening|udp forwarding listening'; then
+    score=$((score + 25))
+    pass_line "UDP forwarding listening log" "found"
+  else
+    warn_line "UDP forwarding listening log" "not found in recent journal"
+  fi
+
+  echo
+  echo "Recommended tunnel profile: proven working profile"
+  echo "Score: $score"
+  echo "Why selected: service/listener/log health for the Hysteria2 OBFS WireGuard forward"
+  echo "What was tested: service active, local listener, connected-to-server log, UDP-forwarding log"
+  echo "What was not proven: WireGuard authentication unless the synthetic handshake test passes"
+}
+
+hy2_auto_print_udp_probe_commands() {
+  local iran_port="$1"
+  local wg_port="$2"
+
+  echo
+  echo -e "${YELLOW}UDP-only fallback probe${NC}"
+  warn_line "UDP-only fallback" "forwarding-only; this does not prove WireGuard authentication"
+  echo "Foreign watcher:"
+  echo "  timeout 40 tcpdump -ni any udp port $wg_port"
+  echo "Iran sender:"
+  echo "  echo viptrue-test >/dev/udp/127.0.0.1/$iran_port"
+}
+
+hy2_auto_select_udp_purpose() {
+  local traffic purpose_choice __purpose_var="$1"
+
+  echo "Tunnel traffic type:"
+  echo "1) UDP"
+  echo "2) TCP"
+  read -r -p "Select traffic type [1-2]: " traffic
+  case "$traffic" in
+    1|"") ;;
+    2)
+      warn_line "TCP auto tunnel" "planned/manual only in this PR; no TCP setup was performed"
+      echo "Use Manual Tunnel Lab for TCP-oriented diagnostics until TCP Auto Wizard is added."
+      return 1
+      ;;
+    *)
+      fail_line "Tunnel traffic type" "choose 1 for UDP or 2 for TCP"
+      return 1
+      ;;
+  esac
+
+  echo
+  echo "Tunnel purpose:"
+  echo "1) WireGuard UDP forward"
+  echo "2) Generic UDP forward"
+  read -r -p "Select tunnel purpose [1-2]: " purpose_choice
+  case "$purpose_choice" in
+    1|"") printf -v "$__purpose_var" '%s' "udp-wg-hy2" ;;
+    2) printf -v "$__purpose_var" '%s' "udp-generic-hy2" ;;
+    *)
+      fail_line "Tunnel purpose" "choose 1 for WireGuard UDP forward or 2 for Generic UDP forward"
+      return 1
+      ;;
+  esac
+}
+
+hy2_auto_profile_name_or_default() {
+  local prompt="$1"
+  local default="$2"
+  local value
+
+  value="$(prompt_default "$prompt" "$default")"
+  if ! valid_profile_name "$value"; then
+    fail_line "profile name" "use 1-32 letters, numbers, dot, underscore, or dash"
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
+
+hy2_auto_value_safe_for_bundle() {
+  local label="$1"
+  local value="$2"
+
+  if [[ -z "${value// /}" || "$value" == *";"* || "$value" == *"="* || "$value" == *[[:space:]]* ]]; then
+    fail_line "$label" "must be non-empty and cannot contain spaces, semicolons, or equals signs"
+    return 1
+  fi
+}
+
+hy2_auto_stop_conflicting_hysteria_services() {
+  local config_path="$1"
+  local service_name="$2"
+  local services service confirm
+
+  services="$(hy2_wg_detect_services_for_config "$config_path")"
+  while IFS= read -r service; do
+    [[ -n "$service" && "$service" != "$service_name" ]] || continue
+    if hy2_wg_service_active "$service"; then
+      warn_line "conflicting Hysteria service" "$service is active and references $config_path"
+      read -r -p "Stop only $service before starting $service_name? [y/N]: " confirm
+      case "$confirm" in
+        y|Y|yes|YES)
+          systemctl stop "$service" 2>/dev/null || true
+          pass_line "conflicting service stop attempted" "$service"
+          ;;
+        *)
+          fail_line "conflicting service" "left active; refusing to continue"
+          return 1
+          ;;
+      esac
+    fi
+  done <<< "$services"
+}
+
+hy2_auto_stop_same_profile_service() {
+  local service_name="$1"
+  local confirm
+
+  if hy2_wg_service_active "$service_name"; then
+    warn_line "existing profile service" "$service_name is active"
+    read -r -p "Stop only $service_name before replacing this profile? [y/N]: " confirm
+    case "$confirm" in
+      y|Y|yes|YES)
+        systemctl stop "$service_name" 2>/dev/null || true
+        pass_line "same-profile service stop attempted" "$service_name"
+        ;;
+      *)
+        fail_line "same-profile service" "left active; refusing to replace this profile"
+        return 1
+        ;;
+    esac
+  fi
+}
+
+hy2_auto_foreign_setup() {
+  local purpose listen_port recommended_port cert_cn masquerade_url wg_iface_default wg_iface
+  local wg_port_default wg_port profile foreign_host target_host target_port auth_pass obfs_pass
+  local bundle_type wg_pub service_name config_path meta_path confirm start_now score
+  local listener_output
+
+  title
+  echo -e "${CYAN}Auto Tunnel Wizard > Foreign/Exit server setup${NC}"
+  line
+  echo
+
+  hy2_auto_select_udp_purpose purpose || { pause; return; }
+  recommended_port="$(hy2_auto_candidate_port)"
+  hy2_auto_print_recommendation "$recommended_port"
+
+  hy2_prompt_non443_port "Foreign Hysteria UDP listen port" "$recommended_port" || { pause; return; }
+  listen_port="$HY2_PROMPTED_PORT"
+  cert_cn="$(prompt_default "Masquerade SNI/CN" "$HY2_DEFAULT_LEGACY_SNI")"
+  cert_cn="${cert_cn:-$HY2_DEFAULT_LEGACY_SNI}"
+  cert_cn="${cert_cn//\//-}"
+  masquerade_url="$(prompt_default "Masquerade URL" "$HY2_DEFAULT_MASQUERADE_URL")"
+  masquerade_url="${masquerade_url:-$HY2_DEFAULT_MASQUERADE_URL}"
+
+  profile="$(hy2_auto_profile_name_or_default "Optional profile name" "auto-foreign")" || { pause; return; }
+  service_name="$(hy2_auto_service_name "foreign" "$profile")"
+  bundle_type="$purpose"
+
+  if [[ "$purpose" == "udp-wg-hy2" ]]; then
+    wg_iface_default="$(hy2_auto_detect_wg_iface)"
+    wg_iface="$(prompt_default "WireGuard interface" "$wg_iface_default")"
+    valid_iface "$wg_iface" || { fail_line "WireGuard interface" "invalid interface name"; pause; return; }
+    wg_port_default="$(hy2_auto_detect_wg_port "$wg_iface")"
+    wg_port="$(prompt_default "WireGuard listen port" "$wg_port_default")"
+    valid_port "$wg_port" || { fail_line "WireGuard listen port" "ports must be 1-65535"; pause; return; }
+    target_host="127.0.0.1"
+    target_port="$wg_port"
+  else
+    target_host="$(prompt_default "Foreign local UDP target host" "127.0.0.1")"
+    target_port="$(prompt_default "Foreign local UDP target port" "51820")"
+    valid_port "$target_port" || { fail_line "Foreign local UDP target port" "ports must be 1-65535"; pause; return; }
+    wg_iface="none"
+    wg_port="$target_port"
+  fi
+
+  foreign_host="$(prompt_default "Foreign public IP/domain for bundle" "$(detect_public_ip)")"
+  hy2_auto_value_safe_for_bundle "Foreign public IP/domain" "$foreign_host" || { pause; return; }
+  hy2_auto_value_safe_for_bundle "Masquerade SNI/CN" "$cert_cn" || { pause; return; }
+  hy2_auto_value_safe_for_bundle "Masquerade URL" "$masquerade_url" || { pause; return; }
+
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  echo "Role: Foreign/Exit server"
+  echo "Profile: $profile"
+  echo "Service: $service_name"
+  echo "Config path: $HY2_LEGACY_CONFIG"
+  echo "Hysteria UDP listen: $listen_port"
+  echo "Proven profile: Hysteria2 OBFS salamander + Bing masquerade + self-signed/insecure TLS"
+  echo "Masquerade SNI/CN: $cert_cn"
+  echo "Masquerade URL: $masquerade_url"
+  echo "Forward target for Iran client: $target_host:$target_port"
+  [[ "$purpose" == "udp-wg-hy2" ]] && echo "WireGuard interface: $wg_iface"
+  echo "Existing /etc/hysteria files and service files will be backed up before overwrite."
+  echo "Only conflicting Hysteria services referencing this config are candidates for stop, after confirmation."
+  echo
+  read -r -p "Create Auto Foreign setup now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *) info_line "Auto Foreign setup" "cancelled before writing files"; pause; return ;;
+  esac
+
+  ensure_root || { pause; return; }
+  ensure_hysteria2_ready || { pause; return; }
+  require_cmd openssl openssl || { pause; return; }
+  if [[ "$purpose" == "udp-wg-hy2" ]]; then
+    hy2_wg_synthetic_require_wg || { pause; return; }
+  fi
+  ensure_hy2_wg_dirs
+  mkdir -p "$HY2_LEGACY_DIR" "$HY2_WG_AUTO_FOREIGN_DIR/$profile" "$HY2_SYSTEMD_SYSTEM_DIR"
+  chmod 700 "$HY2_LEGACY_DIR" "$HY2_WG_AUTO_FOREIGN_DIR/$profile" 2>/dev/null || true
+
+  listener_output="$(list_listeners udp "$listen_port")"
+  if [[ -n "$listener_output" ]]; then
+    warn_line "local UDP listener conflict" "UDP $listen_port already has a listener"
+    printf '%s\n' "$listener_output"
+  fi
+
+  hy2_auto_stop_conflicting_hysteria_services "$HY2_LEGACY_CONFIG" "$service_name" || { pause; return; }
+  hy2_auto_stop_same_profile_service "$service_name" || { pause; return; }
+
+  auth_pass="$(hy2_auto_random_secret)"
+  obfs_pass="$(hy2_auto_random_secret)"
+  hy2_wg_generate_self_signed_cert "$HY2_LEGACY_CERT" "$HY2_LEGACY_KEY" "$cert_cn" || { pause; return; }
+  hy2_wg_write_legacy_proven_config "$listen_port" "$auth_pass" "$obfs_pass" "$HY2_LEGACY_CERT" "$HY2_LEGACY_KEY" "$masquerade_url"
+  config_path="$HY2_WRITTEN_CONFIG"
+  hy2_wg_write_service "$service_name" "server" "$config_path" "VIPTrue Auto Hysteria2 OBFS foreign server $profile"
+
+  meta_path="$(hy2_auto_meta_path "foreign" "$profile")"
+  {
+    echo "role=foreign/server"
+    echo "profile=$profile"
+    echo "service_name=$service_name"
+    echo "config_path=$config_path"
+    echo "listen_port=$listen_port"
+    echo "purpose=$purpose"
+    echo "wg_iface=$wg_iface"
+    echo "wg_port=$wg_port"
+    echo "target_host=$target_host"
+    echo "target_port=$target_port"
+    echo "sni=$cert_cn"
+    echo "masquerade_url=$masquerade_url"
+  } > "$meta_path"
+  chmod 600 "$meta_path" 2>/dev/null || true
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  hy2_wg_apply_ufw_rules "$listen_port"
+
+  score=0
+  echo
+  line
+  echo -e "${CYAN}Auto Foreign Checks${NC}"
+  if hy2_wg_service_active "$service_name"; then score=$((score + 30)); pass_line "service active" "$service_name"; else fail_line "service active" "$service_name inactive"; fi
+  if [[ -n "$(list_listeners udp "$listen_port")" ]]; then score=$((score + 20)); pass_line "UDP port listening" "$listen_port"; else fail_line "UDP port listening" "$listen_port not detected"; fi
+  if [[ "$purpose" == "udp-wg-hy2" ]]; then
+    if have_cmd ip && ip link show "$wg_iface" >/dev/null 2>&1; then pass_line "WireGuard interface exists" "$wg_iface"; else fail_line "WireGuard interface exists" "$wg_iface not found"; fi
+    check_local_listener udp "$wg_port"
+    echo -e "${YELLOW}Foreign WireGuard public key${NC}"
+    wg_pub="$(wg show "$wg_iface" public-key 2>/dev/null || true)"
+    echo "${wg_pub:-unknown}"
+  else
+    wg_pub="none"
+  fi
+
+  echo
+  warn_line "VIPTRUE_TUNNEL_BUNDLE" "contains operational secrets; do not share publicly or commit it"
+  echo "VIPTRUE_TUNNEL_BUNDLE=v1;type=$bundle_type;profile=$profile;foreign_host=$foreign_host;hy2_port=$listen_port;wg_host=$target_host;wg_port=$target_port;wg_pub=${wg_pub:-none};sni=$cert_cn;insecure=true;auth=$auth_pass;obfs=$obfs_pass;masq=$masquerade_url"
+  echo
+  echo "Recommended tunnel profile: proven working profile"
+  echo "Score: $score"
+  echo "Why selected: proven working profile with local service/listener checks"
+  echo "What was tested: Hysteria service, UDP listener, and WireGuard interface/listener when applicable"
+  echo "What was not proven: Iran-side connection and WireGuard synthetic handshake until the Iran setup/tests run"
+
+  set_summary \
+    "Auto Foreign pairing bundle, service/listener checks, and WireGuard public key output." \
+    "If service/listener checks failed, fix the foreign service or firewall before using the bundle." \
+    "Paste the VIPTRUE_TUNNEL_BUNDLE into Auto Tunnel Wizard on the Iran/Entry server." \
+    "Yes: Iran setup and tests are still required."
+  print_summary
+  pause
+}
+
+hy2_auto_iran_setup() {
+  local purpose bundle profile_default profile foreign_host hy2_port wg_host wg_port wg_pub sni auth obfs masq
+  local iran_port endpoint service_name config_path meta_path confirm start_now remote_target
+
+  title
+  echo -e "${CYAN}Auto Tunnel Wizard > Iran/Entry server setup${NC}"
+  line
+  echo
+
+  hy2_auto_select_udp_purpose purpose || { pause; return; }
+  read -r -p "Paste VIPTRUE_TUNNEL_BUNDLE: " bundle
+  hy2_auto_validate_tunnel_bundle "$bundle" || { pause; return; }
+
+  if [[ "$(hy2_auto_bundle_value "$bundle" "type")" != "$purpose" ]]; then
+    fail_line "bundle purpose" "selected purpose does not match bundle type"
+    pause
+    return
+  fi
+
+  profile_default="$(hy2_auto_bundle_value "$bundle" "profile")"
+  profile_default="${profile_default:-auto-wg}"
+  profile="$(hy2_auto_profile_name_or_default "Profile name" "$profile_default")" || { pause; return; }
+  foreign_host="$(hy2_auto_bundle_value "$bundle" "foreign_host")"
+  hy2_port="$(hy2_auto_bundle_value "$bundle" "hy2_port")"
+  wg_host="$(hy2_auto_bundle_value "$bundle" "wg_host")"
+  wg_port="$(hy2_auto_bundle_value "$bundle" "wg_port")"
+  wg_pub="$(hy2_auto_bundle_value "$bundle" "wg_pub")"
+  sni="$(hy2_auto_bundle_value "$bundle" "sni")"
+  auth="$(hy2_auto_bundle_value "$bundle" "auth")"
+  obfs="$(hy2_auto_bundle_value "$bundle" "obfs")"
+  masq="$(hy2_auto_bundle_value "$bundle" "masq")"
+
+  hy2_prompt_non443_port "Iran local UDP listen port" "51822" || { pause; return; }
+  iran_port="$HY2_PROMPTED_PORT"
+  if [[ -n "$(list_listeners udp "$iran_port")" ]]; then
+    fail_line "Iran local UDP listen port" "$iran_port already has an active listener; not stopping unrelated tunnels"
+    pause
+    return
+  fi
+  if hy2_wg_iran_port_in_existing_config "$iran_port"; then
+    fail_line "Iran local UDP listen port" "$iran_port already appears in an existing generated client config; existing tunnels on other ports are preserved"
+    pause
+    return
+  fi
+
+  hy2_auto_endpoint_hints
+  endpoint="$(prompt_default "Iran public endpoint IP/domain for PasarGuard output" "$(detect_public_ip)")"
+  if [[ -z "${endpoint// /}" ]]; then
+    fail_line "Iran public endpoint" "value is required"
+    pause
+    return
+  fi
+
+  service_name="$(hy2_auto_service_name "iran" "$profile")"
+  config_path="$(hy2_auto_iran_config_path "$profile")"
+  remote_target="$wg_host:$wg_port"
+
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  echo "Role: Iran/Entry server"
+  echo "Profile: $profile"
+  echo "Service: $service_name"
+  echo "Config path: $config_path"
+  echo "Iran UDP $iran_port -> Foreign $foreign_host:$hy2_port -> $remote_target"
+  echo "TLS SNI: $sni"
+  echo "TLS insecure: true"
+  echo "Masquerade URL from bundle: ${masq:-unknown}"
+  echo "Existing services on other ports will not be stopped."
+  echo
+  read -r -p "Create Auto Iran setup now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *) info_line "Auto Iran setup" "cancelled before writing files"; pause; return ;;
+  esac
+
+  ensure_root || { pause; return; }
+  ensure_hysteria2_ready || { pause; return; }
+  ensure_hy2_wg_dirs
+  mkdir -p "$HY2_WG_AUTO_IRAN_DIR" "$HY2_SYSTEMD_SYSTEM_DIR"
+  hy2_auto_stop_same_profile_service "$service_name" || { pause; return; }
+
+  hy2_wg_write_client_config "$profile" "$foreign_host" "$hy2_port" "$iran_port" "$wg_host" "$wg_port" "$auth" "$obfs" "$sni" "true" "$config_path"
+  hy2_wg_write_service "$service_name" "client" "$config_path" "VIPTrue Auto Hysteria2 OBFS Iran client $profile"
+  meta_path="$(hy2_auto_meta_path "iran" "$profile")"
+  {
+    echo "role=iran/client"
+    echo "profile=$profile"
+    echo "service_name=$service_name"
+    echo "config_path=$config_path"
+    echo "listen_port=$iran_port"
+    echo "foreign_host=$foreign_host"
+    echo "hy2_port=$hy2_port"
+    echo "remote_target=$remote_target"
+    echo "endpoint=$endpoint"
+    echo "wg_pub=$wg_pub"
+  } > "$meta_path"
+  chmod 600 "$meta_path" 2>/dev/null || true
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  hy2_wg_apply_ufw_rules "$iran_port"
+  hy2_auto_quick_health_test "$service_name" "$iran_port"
+
+  echo
+  echo "Set PasarGuard WireGuard endpoint to: $endpoint:$iran_port"
+  if [[ "$purpose" == "udp-wg-hy2" ]]; then
+    echo
+    echo "Synthetic WireGuard test options:"
+    echo "1. Iran: use Auto Wizard -> Iran: generate/run synthetic test from bundle"
+    echo "2. Foreign: use Auto Wizard -> Add temporary test peer from bundle"
+    echo "3. Foreign cleanup removes the temporary peer after PASS/FAIL"
+  fi
+  hy2_auto_print_udp_probe_commands "$iran_port" "$wg_port"
+
+  set_summary \
+    "Auto Iran config/service, quick health checks, and final PasarGuard endpoint output." \
+    "If quick health failed, service logs or local listener checks identify the first failed layer." \
+    "Run the Auto synthetic WireGuard test to prove handshake and transfer bytes." \
+    "Maybe: foreign peer test setup or firewall/provider action may still be needed."
+  print_summary
+  pause
+}
+
+hy2_auto_add_test_peer_from_bundle() {
+  local bundle peer_pub allowed_ip wg_iface current_hs
+
+  title
+  echo -e "${CYAN}Auto Tunnel Wizard > Add temporary test peer from bundle${NC}"
+  line
+  echo
+  read -r -p "Paste VIPTRUE_TEST_PEER_BUNDLE: " bundle
+  peer_pub="$(hy2_auto_bundle_value "$bundle" "peer_pub")"
+  allowed_ip="$(hy2_auto_bundle_value "$bundle" "allowed_ip")"
+  allowed_ip="${allowed_ip:-10.255.255.2/32}"
+  wg_iface="$(prompt_default "Foreign WireGuard interface" "$(hy2_auto_detect_wg_iface)")"
+
+  if ! valid_wg_public_key "$peer_pub"; then
+    fail_line "test peer public key" "missing or invalid"
+    pause
+    return
+  fi
+  if ! valid_cidr "$allowed_ip"; then
+    fail_line "test peer allowed IP" "use IPv4/CIDR like 10.255.255.2/32"
+    pause
+    return
+  fi
+  valid_iface "$wg_iface" || { fail_line "WireGuard interface" "invalid"; pause; return; }
+
+  hy2_wg_synthetic_require_wg || { pause; return; }
+  ensure_root || { pause; return; }
+  if wg set "$wg_iface" peer "$peer_pub" allowed-ips "$allowed_ip"; then
+    pass_line "temporary test peer added" "$peer_pub allowed-ips $allowed_ip"
+    echo "Cleanup command:"
+    echo "  wg set $wg_iface peer $peer_pub remove"
+  else
+    fail_line "temporary test peer" "wg set failed"
+    pause
+    return
+  fi
+  current_hs="$(wg_latest_handshake_value "$wg_iface" "$peer_pub")"
+  info_line "current handshake" "$current_hs"
+  pause
+}
+
+hy2_auto_run_synthetic_from_bundle() {
+  local bundle iran_port wg_pub open_now
+
+  title
+  echo -e "${CYAN}Auto Tunnel Wizard > Iran synthetic WireGuard test from bundle${NC}"
+  line
+  echo
+  read -r -p "Paste VIPTRUE_TUNNEL_BUNDLE: " bundle
+  hy2_auto_validate_tunnel_bundle "$bundle" || { pause; return; }
+  if [[ "$(hy2_auto_bundle_value "$bundle" "type")" != "udp-wg-hy2" ]]; then
+    fail_line "synthetic WireGuard test" "bundle is not a WireGuard UDP forward"
+    pause
+    return
+  fi
+  wg_pub="$(hy2_auto_bundle_value "$bundle" "wg_pub")"
+  if ! valid_wg_public_key "$wg_pub"; then
+    fail_line "foreign WireGuard public key" "bundle missing valid wg_pub"
+    pause
+    return
+  fi
+  iran_port="$(prompt_default "Iran local Hysteria UDP listen port" "51822")"
+  if ! valid_port "$iran_port" || [[ "$iran_port" == "443" ]]; then
+    fail_line "Iran local Hysteria UDP listen port" "use a valid non-443 UDP port"
+    pause
+    return
+  fi
+  echo
+  echo "Use these values in the existing synthetic test prompts:"
+  echo "  Iran local Hysteria UDP listen port: $iran_port"
+  echo "  Foreign WireGuard public key: $wg_pub"
+  echo "The synthetic test now prints VIPTRUE_TEST_PEER_BUNDLE for the foreign server."
+  echo
+  read -r -p "Open the guided Synthetic WireGuard test now? [Y/n]: " open_now
+  case "${open_now:-Y}" in
+    y|Y|yes|YES) hy2_wg_synthetic_run_iran_client ;;
+    *) info_line "synthetic test" "not started" ;;
+  esac
 }
 
 hy2_wg_iran_post_profile_tests() {
@@ -2296,6 +3030,8 @@ hy2_wg_synthetic_run_iran_client() {
   echo
   echo -e "${YELLOW}Temporary public key for Foreign prepare mode${NC}"
   echo "$temp_public_key"
+  echo
+  echo "VIPTRUE_TEST_PEER_BUNDLE=v1;type=wg-test-peer;peer_pub=$temp_public_key;allowed_ip=$client_addr"
   info_line "private key" "stored at $temp_key_file with chmod 600; value is not printed"
   echo
   read -r -p "Has the foreign temporary peer been added now? [y/N]: " confirm
@@ -2958,7 +3694,10 @@ hy2_wg_service_status_text() {
 }
 
 hy2_wg_is_client_profile() {
-  [[ "$1" == "iran/client" ]]
+  case "$1" in
+    iran/client|auto-iran/client) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 hy2_wg_is_raw_legacy_profile() {
@@ -2967,7 +3706,7 @@ hy2_wg_is_raw_legacy_profile() {
 
 hy2_wg_is_foreign_profile() {
   case "$1" in
-    foreign|legacy-managed|legacy-proven-foreign) return 0 ;;
+    foreign|legacy-managed|legacy-proven-foreign|auto-foreign/server|clean-foreign/server) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3001,6 +3740,12 @@ hy2_wg_foreign_meta_path_for_config() {
 
   if [[ "$config" == "$HY2_WG_DIR/foreign-server.yaml" ]]; then
     printf '%s/foreign.meta\n' "$HY2_WG_DIR"
+    return
+  fi
+
+  profile_dir="$(dirname "$config")"
+  if [[ "$profile_dir" == "$HY2_WG_AUTO_FOREIGN_DIR"/* ]]; then
+    printf '%s/profile.meta\n' "$profile_dir"
     return
   fi
 
@@ -3119,6 +3864,23 @@ hy2_wg_service_active() {
   have_cmd systemctl && systemctl is-active --quiet "$service_name" 2>/dev/null
 }
 
+hy2_wg_profile_config_known() {
+  local config="$1"
+  local known
+
+  for known in "${HY2_PROFILE_CONFIGS[@]}"; do
+    [[ "$known" == "$config" ]] && return 0
+  done
+
+  return 1
+}
+
+hy2_wg_extract_service_config_path() {
+  local service_file="$1"
+
+  sed -nE 's/^ExecStart=.*--config[=[:space:]]+([^[:space:]]+).*/\1/p' "$service_file" 2>/dev/null | head -n 1
+}
+
 hy2_wg_each_managed_config() {
   [[ -f "$HY2_WG_DIR/foreign-server.yaml" ]] && printf '%s\n' "$HY2_WG_DIR/foreign-server.yaml"
 
@@ -3191,7 +3953,8 @@ hy2_wg_add_profile() {
 
 hy2_wg_collect_profiles() {
   local config profile service listen target server_host server_port remote_target
-  local meta_wg_iface meta_wg_port legacy_services legacy_primary masquerade_url
+  local meta_wg_iface meta_wg_port legacy_services legacy_primary masquerade_url endpoint
+  local meta_path service_file service_file_name service_config role
 
   HY2_PROFILE_NAMES=()
   HY2_PROFILE_MODES=()
@@ -3223,6 +3986,35 @@ hy2_wg_collect_profiles() {
     done < <(find "$HY2_WG_LEGACY_DIR" -mindepth 2 -maxdepth 2 -type f -name 'config.yaml' -print0 2>/dev/null | sort -z)
   fi
 
+  if [[ -d "$HY2_WG_AUTO_FOREIGN_DIR" ]]; then
+    while IFS= read -r -d '' config; do
+      profile="$(basename "$(dirname "$config")")"
+      meta_path="$(hy2_auto_meta_path "foreign" "$profile")"
+      service="$(sed -nE 's/^service_name=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      service="${service:-$(hy2_auto_service_name "foreign" "$profile")}"
+      listen="$(hy2_wg_extract_listen_port "$config")"
+      meta_wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      meta_wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      target="WireGuard ${meta_wg_iface:-wg0}:${meta_wg_port:-51820}; auto foreign"
+      hy2_wg_add_profile "$profile" "auto-foreign/server" "$config" "$service" "${listen:-unknown}" "$target"
+    done < <(find "$HY2_WG_AUTO_FOREIGN_DIR" -mindepth 2 -maxdepth 2 -type f -name 'config.yaml' -print0 2>/dev/null | sort -z)
+  fi
+
+  if [[ -d "$HY2_WG_AUTO_IRAN_DIR" ]]; then
+    while IFS= read -r -d '' config; do
+      profile="$(basename "$config" .yaml)"
+      meta_path="$(hy2_auto_meta_path "iran" "$profile")"
+      service="$(sed -nE 's/^service_name=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      service="${service:-$(hy2_auto_service_name "iran" "$profile")}"
+      listen="$(hy2_wg_extract_listen_port "$config")"
+      remote_target="$(hy2_wg_extract_remote_target "$config")"
+      server_host="$(hy2_wg_field_value "$config" "server")"
+      endpoint="$(sed -nE 's/^endpoint=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      target="${remote_target:-127.0.0.1:51820} via $server_host; endpoint suggestion: ${endpoint:-unknown}:${listen:-unknown}"
+      hy2_wg_add_profile "$profile" "auto-iran/client" "$config" "$service" "${listen:-unknown}" "$target"
+    done < <(find "$HY2_WG_AUTO_IRAN_DIR" -maxdepth 1 -type f -name '*.yaml' -print0 2>/dev/null | sort -z)
+  fi
+
   if [[ -d "$HY2_WG_CLIENT_DIR" ]]; then
     while IFS= read -r -d '' config; do
       profile="$(basename "$config" .yaml)"
@@ -3244,6 +4036,44 @@ hy2_wg_collect_profiles() {
     target="legacy /etc/hysteria; masquerade: $masquerade_url"
     hy2_wg_add_profile "legacy-proven-foreign" "legacy-proven-foreign" "$HY2_LEGACY_CONFIG" "${legacy_primary:-none}" "${listen:-unknown}" "$target"
   fi
+
+  for dir in $HY2_SYSTEMD_SEARCH_DIRS; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r -d '' service_file; do
+      service_file_name="$(basename "$service_file")"
+      case "$service_file_name" in
+        viptrue-clean-hy2-wg-*.service|viptrue-auto-hy2-*.service|viptrue-hy2-wg-*.service) ;;
+        *) continue ;;
+      esac
+      service_config="$(hy2_wg_extract_service_config_path "$service_file")"
+      [[ -n "$service_config" && -f "$service_config" ]] || continue
+      hy2_wg_profile_config_known "$service_config" && continue
+      profile="${service_file_name%.service}"
+      listen="$(hy2_wg_extract_listen_port "$service_config")"
+      remote_target="$(hy2_wg_extract_remote_target "$service_config")"
+      if [[ "$service_file_name" == viptrue-auto-hy2-iran-*.service ]]; then
+        profile="${profile#viptrue-auto-hy2-iran-}"
+        role="auto-iran/client"
+        server_host="$(hy2_wg_field_value "$service_config" "server")"
+        target="${remote_target:-127.0.0.1:51820} via $server_host"
+      elif [[ "$service_file_name" == viptrue-auto-hy2-foreign-*.service ]]; then
+        profile="${profile#viptrue-auto-hy2-foreign-}"
+        role="auto-foreign/server"
+        meta_path="$(hy2_auto_meta_path "foreign" "$profile")"
+        meta_wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+        meta_wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+        target="WireGuard ${meta_wg_iface:-wg0}:${meta_wg_port:-51820}; auto foreign"
+      elif grep -q '^server:' "$service_config" 2>/dev/null; then
+        role="iran/client"
+        server_host="$(hy2_wg_field_value "$service_config" "server")"
+        target="${remote_target:-127.0.0.1:51820} via $server_host"
+      else
+        role="clean-foreign/server"
+        target="foreign/server config: $service_config"
+      fi
+      hy2_wg_add_profile "$profile" "$role" "$service_config" "$service_file_name" "${listen:-unknown}" "$target"
+    done < <(find "$dir" -maxdepth 1 -type f \( -name 'viptrue-clean-hy2-wg-*.service' -o -name 'viptrue-auto-hy2-*.service' -o -name 'viptrue-hy2-wg-*.service' \) -print0 2>/dev/null)
+  done
 }
 
 hy2_wg_print_profile_row() {
@@ -4096,6 +4926,121 @@ hy2_wg_forward_menu() {
   done
 }
 
+auto_tunnel_wizard_menu() {
+  local choice port
+
+  while true; do
+    title
+    echo -e "${CYAN}Auto Tunnel Wizard${NC}"
+    line
+    echo
+    echo "1. Foreign/Exit server setup"
+    echo "2. Iran/Entry server setup"
+    echo "3. Iran: generate/run synthetic test from bundle"
+    echo "4. Foreign: add temporary test peer from bundle"
+    echo "5. UDP-only fallback probe commands"
+    echo "6. Auto scan / recommended settings"
+    echo "7. Back"
+    echo
+    read -r -p "Enter your choice [1-7]: " choice
+
+    case "$choice" in
+      1) hy2_auto_foreign_setup ;;
+      2) hy2_auto_iran_setup ;;
+      3) hy2_auto_run_synthetic_from_bundle ;;
+      4) hy2_auto_add_test_peer_from_bundle ;;
+      5)
+        port="$(prompt_default "Foreign local WireGuard UDP port" "51820")"
+        valid_port "$port" || { fail_line "WireGuard UDP port" "ports must be 1-65535"; pause; continue; }
+        hy2_prompt_non443_port "Iran local Hysteria UDP listen port" "51822" || { pause; continue; }
+        hy2_auto_print_udp_probe_commands "$HY2_PROMPTED_PORT" "$port"
+        pause
+        ;;
+      6)
+        port="$(hy2_auto_candidate_port)"
+        hy2_auto_print_recommendation "$port"
+        pause
+        ;;
+      7) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+manual_tunnel_lab_menu() {
+  while true; do
+    title
+    echo -e "${CYAN}Manual Tunnel Lab${NC}"
+    line
+    echo
+    echo "1. Preflight checks"
+    echo "2. Quality tests"
+    echo "3. Port checks"
+    echo "4. GRE helper"
+    echo "5. WireGuard helper"
+    echo "6. Hysteria2 helper"
+    echo "7. Hysteria2 OBFS -> WireGuard Forward"
+    echo "8. Reverse TLS / SNI notes"
+    echo "9. Legacy Proven Foreign Mode"
+    echo "10. Iran Server Mode"
+    echo "11. Manage Existing Hysteria2 WireGuard Forwards"
+    echo "12. Synthetic WireGuard Handshake Test"
+    echo "13. UDP-only fallback probe"
+    echo "14. Back"
+    echo
+    read -r -p "Enter your choice [1-14]: " choice
+
+    case "$choice" in
+      1) preflight_checks ;;
+      2) quality_tests ;;
+      3) port_checks ;;
+      4) gre_helper ;;
+      5) wireguard_helper ;;
+      6) hysteria2_helper ;;
+      7) hy2_wg_forward_menu ;;
+      8) reverse_tls_sni_notes ;;
+      9) hy2_wg_setup_legacy_proven_foreign_server ;;
+      10) hy2_wg_setup_iran_server ;;
+      11) hy2_wg_manage_existing_menu ;;
+      12) hy2_wg_synthetic_menu ;;
+      13) hy2_wg_synthetic_udp_probe_menu ;;
+      14) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+manage_existing_tunnels_menu() {
+  hy2_wg_manage_existing_menu
+}
+
+test_existing_tunnels_menu() {
+  while true; do
+    title
+    echo -e "${CYAN}Test Existing Tunnels${NC}"
+    line
+    echo
+    echo "1. Test selected managed profile"
+    echo "2. Wait for WireGuard Handshake"
+    echo "3. Synthetic WireGuard Handshake Test"
+    echo "4. UDP-only fallback probe"
+    echo "5. Auto scan / scoring notes"
+    echo "6. Back"
+    echo
+    read -r -p "Enter your choice [1-6]: " choice
+
+    case "$choice" in
+      1) hy2_wg_manage_test_profile ;;
+      2) hy2_wg_wait_for_wireguard_handshake ;;
+      3) hy2_wg_synthetic_menu ;;
+      4) hy2_wg_synthetic_udp_probe_menu ;;
+      5) hy2_auto_print_recommendation "$(hy2_auto_candidate_port)"; pause ;;
+      6) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 reverse_tls_sni_notes() {
   local local_port placeholder_domain
 
@@ -4169,31 +5114,22 @@ while true; do
   echo -e "${CYAN}Tunnel Manager${NC}"
   line
   echo
-  echo "1. Preflight checks"
-  echo "2. Quality tests"
-  echo "3. Port checks"
-  echo "4. GRE helper"
-  echo "5. WireGuard helper"
-  echo "6. Hysteria2 helper"
-  echo "7. Hysteria2 OBFS -> WireGuard Forward"
-  echo "8. Reverse TLS / SNI notes"
-  echo "9. Diagnostics summary"
-  echo "0. Back"
-  echo "99. Exit"
+  echo "1. Auto Tunnel Wizard"
+  echo "2. Manual Tunnel Lab"
+  echo "3. Manage Existing Tunnels"
+  echo "4. Test Existing Tunnels"
+  echo "5. Diagnostics Summary"
+  echo "6. Back"
   echo
-  read -r -p "Enter your choice [0-9,99]: " choice
+  read -r -p "Enter your choice [1-6]: " choice
 
   case "$choice" in
-    1) preflight_checks ;;
-    2) quality_tests ;;
-    3) port_checks ;;
-    4) gre_helper ;;
-    5) wireguard_helper ;;
-    6) hysteria2_helper ;;
-    7) hy2_wg_forward_menu ;;
-    8) reverse_tls_sni_notes ;;
-    9) diagnostics_summary_screen ;;
-    0) break ;;
+    1) auto_tunnel_wizard_menu ;;
+    2) manual_tunnel_lab_menu ;;
+    3) manage_existing_tunnels_menu ;;
+    4) test_existing_tunnels_menu ;;
+    5) diagnostics_summary_screen ;;
+    6|0) break ;;
     99) exit_toolbox ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
