@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=../../lib/ui.sh
+# shellcheck source=lib/ui.sh
 source "$BASE_DIR/lib/ui.sh"
 
 LAST_CHECKED="No diagnostics have been run yet."

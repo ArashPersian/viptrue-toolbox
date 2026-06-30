@@ -21,8 +21,9 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Advisory ShellCheck for active entry points
+        continue-on-error: true
         run: |
-          shellcheck -x \
+          shellcheck -x -P . \
             viptrue.sh \
             lib/ui.sh \
             menus/main.sh \
