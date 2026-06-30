@@ -24,24 +24,45 @@ Main Menu -> Work -> Utility Tools -> Tunnel Manager
 The Tunnel Manager is split into product-oriented and lab-oriented paths:
 
 ```text
-Tunnel Manager -> Auto Tunnel Wizard
+Tunnel Manager -> Auto Tunnel Expert
 Tunnel Manager -> Manual Tunnel Lab
 Tunnel Manager -> Manage Existing Tunnels
 Tunnel Manager -> Test Existing Tunnels
 ```
 
-Use Auto Tunnel Wizard for the proven production path first. It uses a safe
-two-step pairing-code workflow instead of storing SSH keys or secrets:
+Use Auto Tunnel Expert when you want the toolbox to act like a tunnel selector
+before it acts like a builder:
 
-1. Run `Foreign/Exit server setup` on the foreign WireGuard host. It creates
-   the proven Hysteria2 OBFS salamander + Bing masquerade profile, starts a
-   dedicated `viptrue-auto-hy2-foreign-*` service, checks service/listener
-   health, and prints a one-line `VIPTRUE_TUNNEL_BUNDLE`.
-2. Run `Iran/Entry server setup` on the Iran entry server. Paste the bundle,
-   enter the Iran local UDP listen port and the real inbound public IP/domain,
-   then start the dedicated `viptrue-auto-hy2-iran-*` service.
-3. Set PasarGuard WireGuard endpoint to the printed
-   `<IRAN_PUBLIC_ENDPOINT>:<IRAN_PORT>` value.
+```text
+Tunnel Manager -> Auto Tunnel Expert
+1. Scan Best Tunnel Between Two Servers
+2. Build Selected Tunnel From Scan Result
+3. Add Another Foreign Server To Existing Iran Entry
+4. Show Engine Registry
+5. Explain Engine Families
+```
+
+The scanner is generic. WireGuard and Xray are destination examples only; the
+scanner does not require `wg0`, WireGuard public keys, Xray, PasarGuard, or any
+application already installed behind the tunnel. It asks for server role,
+traffic type, Iran/Foreign endpoints, a destination host/port from the foreign
+server point of view, and an optional profile name.
+
+Pairing Mode is implemented first:
+
+1. Run `Scan Best Tunnel Between Two Servers` on the Foreign / Exit server to
+   print a `VIPTRUE_SCAN_BUNDLE` with no runtime auth secrets.
+2. Paste that bundle on the Iran / Entry scanner, or enter values manually.
+3. Review the ranked engine table.
+4. Use `Build Selected Tunnel From Scan Result` for the implemented
+   `hysteria2_obfs_udp` generic UDP forward. Other engines are registered and
+   scaffolded for later PRs.
+
+The implemented generic builder creates managed Hysteria2 OBFS UDP forwards
+under `/etc/viptrue-hy2-wg-forward/auto/`, keeps the proven salamander OBFS,
+`sniGuard: disable`, Bing masquerade, self-signed TLS, and non-443 UDP profile,
+and supports one Iran entry server mapping to multiple foreign servers by using
+one Iran listen port per foreign mapping.
 
 `VIPTRUE_TUNNEL_BUNDLE` contains operational auth/OBFS secrets. Treat it like a
 password: do not paste it into public chats, logs, tickets, or commits.
@@ -50,6 +71,11 @@ Manual Tunnel Lab keeps the detailed diagnostics and expert tools for preflight
 checks, ports, quality tests, GRE, WireGuard, Hysteria2, reverse TLS/SNI
 planning, legacy proven mode, Iran server mode, profile management, and
 synthetic WireGuard tests.
+
+Architecture notes:
+
+- [Tunnel Engine Registry](docs/TUNNEL_ENGINE_REGISTRY.md)
+- [Tunnel Scanner Architecture](docs/TUNNEL_SCANNER_ARCHITECTURE.md)
 
 For PasarGuard WireGuard nodes, use:
 
