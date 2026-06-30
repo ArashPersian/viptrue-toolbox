@@ -3,7 +3,7 @@
 Version: 0.3.3
 Branch: fasttrack/tunnel-manager-urgent
 Base commit: 7b1da0b Remove accidental keep file
-Commit: pending local feature commit
+Commit: 69515ec Fast-track Tunnel Manager diagnostics
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
