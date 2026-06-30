@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.6 - Unreleased
+
+- Added detection for legacy Hysteria2 configs under `/etc/hysteria`.
+- Added legacy profile details with masked secrets, service discovery, and
+  preserved `sniGuard`, salamander OBFS, and masquerade proxy fields.
+- Added import for legacy `/etc/hysteria` profiles into the managed
+  Hysteria2 WireGuard directory with archive-before-replace safety.
+- Added legacy conflict checks for duplicate UDP ports, listener overlap, and
+  simultaneous old/imported service activity.
+
 ## 0.3.5 - Unreleased
 
 - Added management for existing Hysteria2 OBFS WireGuard forwards under the

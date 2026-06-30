@@ -13,8 +13,16 @@ LAST_SERVER_ACTION="Unknown."
 HY2_WG_DIR="${VIPTRUE_HY2_WG_DIR:-/etc/viptrue-hy2-wg-forward}"
 HY2_WG_CLIENT_DIR="$HY2_WG_DIR/clients"
 HY2_WG_CERT_DIR="$HY2_WG_DIR/certs"
+HY2_WG_LEGACY_DIR="$HY2_WG_DIR/legacy"
 HY2_WG_ARCHIVE_DIR="$HY2_WG_DIR/archive"
 HY2_WG_SERVICE_PREFIX="viptrue-hy2-wg"
+HY2_LEGACY_DIR="${VIPTRUE_HYSTERIA_LEGACY_DIR:-/etc/hysteria}"
+HY2_LEGACY_CONFIG="$HY2_LEGACY_DIR/config.yaml"
+HY2_LEGACY_CERT="$HY2_LEGACY_DIR/server.crt"
+HY2_LEGACY_KEY="$HY2_LEGACY_DIR/server.key"
+HY2_SYSTEMD_SYSTEM_DIR="${VIPTRUE_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+HY2_SYSTEMD_SEARCH_DIRS="${VIPTRUE_SYSTEMD_SEARCH_DIRS:-$HY2_SYSTEMD_SYSTEM_DIR /lib/systemd/system /usr/lib/systemd/system}"
+HY2_DEFAULT_MASQUERADE_URL="https://www.bing.com/"
 HY2_PROMPTED_PORT=""
 HY2_WRITTEN_CONFIG=""
 
@@ -916,8 +924,8 @@ ensure_hysteria2_ready() {
 }
 
 ensure_hy2_wg_dirs() {
-  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_ARCHIVE_DIR"
-  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_ARCHIVE_DIR" 2>/dev/null || true
+  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_LEGACY_DIR" "$HY2_WG_ARCHIVE_DIR"
+  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_LEGACY_DIR" "$HY2_WG_ARCHIVE_DIR" 2>/dev/null || true
 }
 
 backup_existing_file() {
@@ -975,13 +983,15 @@ hy2_wg_write_foreign_config() {
   local tls_mode="$4"
   local cert_path="$5"
   local key_path="$6"
-  local config_path="$HY2_WG_DIR/foreign-server.yaml"
-  local auth_q obfs_q cert_q key_q
+  local masquerade_url="${7:-$HY2_DEFAULT_MASQUERADE_URL}"
+  local config_path="${8:-$HY2_WG_DIR/foreign-server.yaml}"
+  local auth_q obfs_q cert_q key_q masquerade_q
 
   auth_q="$(yaml_quote "$auth_pass")"
   obfs_q="$(yaml_quote "$obfs_pass")"
   cert_q="$(yaml_quote "$cert_path")"
   key_q="$(yaml_quote "$key_path")"
+  masquerade_q="$(yaml_quote "$masquerade_url")"
 
   backup_existing_file "$config_path"
   {
@@ -1002,6 +1012,13 @@ hy2_wg_write_foreign_config() {
     echo "  type: salamander"
     echo "  salamander:"
     echo "    password: $obfs_q"
+    if [[ -n "${masquerade_url// /}" ]]; then
+      echo
+      echo "masquerade:"
+      echo "  type: proxy"
+      echo "  proxy:"
+      echo "    url: $masquerade_q"
+    fi
     echo
     echo "disableUDP: false"
     echo "udpIdleTimeout: 60s"
@@ -1019,7 +1036,7 @@ hy2_wg_write_service() {
   local hy2_bin service_path
 
   hy2_bin="$(hy2_bin_path)"
-  service_path="/etc/systemd/system/$service_name"
+  service_path="$HY2_SYSTEMD_SYSTEM_DIR/$service_name"
   backup_existing_file "$service_path"
 
   cat > "$service_path" <<EOF_SERVICE
@@ -1697,10 +1714,28 @@ hy2_wg_field_value() {
   hy2_wg_unquote "$raw"
 }
 
+hy2_wg_section_field_value() {
+  local config="$1"
+  local section="$2"
+  local key="$3"
+
+  awk -v section="$section" -v key="$key" '
+    $0 ~ "^[[:space:]]*" section ":" {inside=1; next}
+    inside && /^[^[:space:]]/ {inside=0}
+    inside && $0 ~ "^[[:space:]]*" key ":" {
+      sub("^[[:space:]]*" key ":[[:space:]]*", "")
+      print
+      exit
+    }
+  ' "$config" 2>/dev/null | while IFS= read -r value; do
+    hy2_wg_unquote "$value"
+  done
+}
+
 hy2_wg_extract_listen_port() {
   local config="$1"
 
-  sed -nE 's/^[[:space:]]*(-[[:space:]]*)?listen:[[:space:]]*.*:([0-9]+)[[:space:]]*$/\2/p' "$config" 2>/dev/null | head -n 1
+  sed -nE 's/^[^[:alnum:]#-]*(-[[:space:]]*)?listen:[[:space:]]*.*:([0-9]+)[[:space:]]*$/\2/p' "$config" 2>/dev/null | head -n 1
 }
 
 hy2_wg_extract_remote_target() {
@@ -1784,7 +1819,7 @@ hy2_wg_sanitize_config() {
 hy2_wg_service_path() {
   local service_name="$1"
 
-  printf '/etc/systemd/system/%s\n' "$service_name"
+  printf '%s/%s\n' "$HY2_SYSTEMD_SYSTEM_DIR" "$service_name"
 }
 
 hy2_wg_service_status_text() {
@@ -1797,6 +1832,209 @@ hy2_wg_service_status_text() {
   else
     printf 'inactive'
   fi
+}
+
+hy2_wg_is_client_profile() {
+  [[ "$1" == "iran/client" ]]
+}
+
+hy2_wg_is_raw_legacy_profile() {
+  [[ "$1" == "legacy-foreign" ]]
+}
+
+hy2_wg_is_foreign_profile() {
+  case "$1" in
+    foreign|legacy-managed|legacy-foreign) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+hy2_wg_legacy_config_present() {
+  [[ -f "$HY2_LEGACY_CONFIG" && -f "$HY2_LEGACY_CERT" && -f "$HY2_LEGACY_KEY" ]]
+}
+
+hy2_wg_legacy_service_name() {
+  local profile="$1"
+
+  hy2_wg_service_name "legacy-$profile"
+}
+
+hy2_wg_managed_legacy_profile_name() {
+  local config="$1"
+  local profile_dir
+
+  profile_dir="$(dirname "$config")"
+  basename "$profile_dir"
+}
+
+hy2_wg_foreign_meta_path_for_config() {
+  local config="$1"
+  local profile_dir
+
+  if [[ "$config" == "$HY2_WG_DIR/foreign-server.yaml" ]]; then
+    printf '%s/foreign.meta\n' "$HY2_WG_DIR"
+    return
+  fi
+
+  profile_dir="$(dirname "$config")"
+  if [[ "$profile_dir" == "$HY2_WG_LEGACY_DIR"/* ]]; then
+    printf '%s/profile.meta\n' "$profile_dir"
+    return
+  fi
+
+  printf '%s/foreign.meta\n' "$HY2_WG_DIR"
+}
+
+hy2_wg_masquerade_url() {
+  local config="$1"
+  local url
+
+  url="$(hy2_wg_section_field_value "$config" "proxy" "url")"
+  printf '%s\n' "${url:-$HY2_DEFAULT_MASQUERADE_URL}"
+}
+
+hy2_wg_obfs_type() {
+  local config="$1"
+  local obfs_type
+
+  obfs_type="$(hy2_wg_section_field_value "$config" "obfs" "type")"
+  printf '%s\n' "${obfs_type:-unknown}"
+}
+
+hy2_wg_sni_guard() {
+  local config="$1"
+  local value
+
+  value="$(hy2_wg_field_value "$config" "sniGuard")"
+  printf '%s\n' "${value:-none}"
+}
+
+hy2_wg_service_file_exists() {
+  local service_name="$1"
+  local dir
+
+  for dir in $HY2_SYSTEMD_SEARCH_DIRS; do
+    [[ -f "$dir/$service_name" ]] && return 0
+  done
+
+  have_cmd systemctl && systemctl cat "$service_name" >/dev/null 2>&1
+}
+
+hy2_wg_service_references_config() {
+  local service_name="$1"
+  local config="$2"
+  local dir
+
+  for dir in $HY2_SYSTEMD_SEARCH_DIRS; do
+    if [[ -f "$dir/$service_name" ]] && grep -Fq -- "$config" "$dir/$service_name" 2>/dev/null; then
+      return 0
+    fi
+  done
+
+  have_cmd systemctl && systemctl cat "$service_name" 2>/dev/null | grep -Fq -- "$config"
+}
+
+hy2_wg_detect_services_for_config() {
+  local config="$1"
+  local service service_file dir
+  local known_services=(
+    "hysteria.service"
+    "hysteria-server.service"
+    "hysteria2.service"
+    "hysteria2-server.service"
+  )
+
+  {
+    for service in "${known_services[@]}"; do
+      if hy2_wg_service_file_exists "$service" || hy2_wg_service_references_config "$service" "$config"; then
+        printf '%s\n' "$service"
+      fi
+    done
+
+    if have_cmd systemctl; then
+      while IFS= read -r service; do
+        [[ -n "$service" ]] || continue
+        hy2_wg_service_references_config "$service" "$config" && printf '%s\n' "$service"
+      done < <(systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null | awk '{print $1}')
+    fi
+
+    for dir in $HY2_SYSTEMD_SEARCH_DIRS; do
+      [[ -d "$dir" ]] || continue
+      while IFS= read -r -d '' service_file; do
+        if grep -Fq -- "$config" "$service_file" 2>/dev/null; then
+          basename "$service_file"
+        fi
+      done < <(find "$dir" -maxdepth 1 -type f -name '*.service' -print0 2>/dev/null)
+    done
+  } | sort -u
+}
+
+hy2_wg_join_lines() {
+  local value joined=""
+
+  while IFS= read -r value; do
+    [[ -n "$value" ]] || continue
+    if [[ -n "$joined" ]]; then
+      joined="$joined, $value"
+    else
+      joined="$value"
+    fi
+  done
+
+  printf '%s\n' "$joined"
+}
+
+hy2_wg_service_active() {
+  local service_name="$1"
+
+  have_cmd systemctl && systemctl is-active --quiet "$service_name" 2>/dev/null
+}
+
+hy2_wg_each_managed_config() {
+  [[ -f "$HY2_WG_DIR/foreign-server.yaml" ]] && printf '%s\n' "$HY2_WG_DIR/foreign-server.yaml"
+
+  if [[ -d "$HY2_WG_CLIENT_DIR" ]]; then
+    find "$HY2_WG_CLIENT_DIR" -maxdepth 1 -type f -name '*.yaml' -print 2>/dev/null
+  fi
+
+  if [[ -d "$HY2_WG_LEGACY_DIR" ]]; then
+    find "$HY2_WG_LEGACY_DIR" -mindepth 2 -maxdepth 2 -type f -name 'config.yaml' -print 2>/dev/null
+  fi
+}
+
+hy2_wg_archive_existing_path() {
+  local path="$1"
+  local archive_dir="$2"
+  local destination
+
+  [[ -e "$path" ]] || return 0
+  mkdir -p "$archive_dir"
+  destination="$archive_dir/$(basename "$path")"
+  if [[ -e "$destination" ]]; then
+    destination="$archive_dir/$(date +%Y%m%d-%H%M%S)-$(basename "$path")"
+  fi
+  mv "$path" "$destination"
+  pass_line "archived existing file" "$path -> $destination"
+}
+
+hy2_wg_copy_legacy_config_for_import() {
+  local source_config="$1"
+  local dest_config="$2"
+  local dest_cert="$3"
+  local dest_key="$4"
+  local line cert_q key_q
+
+  cert_q="$(yaml_quote "$dest_cert")"
+  key_q="$(yaml_quote "$dest_key")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^([[:space:]]*)cert:[[:space:]]* ]]; then
+      printf '%scert: %s\n' "${BASH_REMATCH[1]}" "$cert_q"
+    elif [[ "$line" =~ ^([[:space:]]*)key:[[:space:]]* ]]; then
+      printf '%skey: %s\n' "${BASH_REMATCH[1]}" "$key_q"
+    else
+      printf '%s\n' "$line"
+    fi
+  done < "$source_config" > "$dest_config"
 }
 
 HY2_PROFILE_NAMES=()
@@ -1824,7 +2062,7 @@ hy2_wg_add_profile() {
 
 hy2_wg_collect_profiles() {
   local config profile service listen target server_host server_port remote_target
-  local meta_wg_iface meta_wg_port
+  local meta_wg_iface meta_wg_port legacy_services legacy_primary masquerade_url
 
   HY2_PROFILE_NAMES=()
   HY2_PROFILE_MODES=()
@@ -1837,10 +2075,23 @@ hy2_wg_collect_profiles() {
   if [[ -f "$config" ]]; then
     service="$(hy2_wg_service_name "foreign")"
     listen="$(hy2_wg_extract_listen_port "$config")"
-    meta_wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
-    meta_wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+    meta_wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$(hy2_wg_foreign_meta_path_for_config "$config")" 2>/dev/null | head -n 1)"
+    meta_wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$(hy2_wg_foreign_meta_path_for_config "$config")" 2>/dev/null | head -n 1)"
     target="WireGuard ${meta_wg_iface:-wg0}:${meta_wg_port:-51820}"
     hy2_wg_add_profile "foreign" "foreign" "$config" "$service" "${listen:-unknown}" "$target"
+  fi
+
+  if [[ -d "$HY2_WG_LEGACY_DIR" ]]; then
+    while IFS= read -r -d '' config; do
+      profile="$(hy2_wg_managed_legacy_profile_name "$config")"
+      service="$(hy2_wg_legacy_service_name "$profile")"
+      listen="$(hy2_wg_extract_listen_port "$config")"
+      meta_wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$(hy2_wg_foreign_meta_path_for_config "$config")" 2>/dev/null | head -n 1)"
+      meta_wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$(hy2_wg_foreign_meta_path_for_config "$config")" 2>/dev/null | head -n 1)"
+      masquerade_url="$(hy2_wg_masquerade_url "$config")"
+      target="WireGuard ${meta_wg_iface:-wg0}:${meta_wg_port:-51820}; masquerade: $masquerade_url"
+      hy2_wg_add_profile "$profile" "legacy-managed" "$config" "$service" "${listen:-unknown}" "$target"
+    done < <(find "$HY2_WG_LEGACY_DIR" -mindepth 2 -maxdepth 2 -type f -name 'config.yaml' -print0 2>/dev/null | sort -z)
   fi
 
   if [[ -d "$HY2_WG_CLIENT_DIR" ]]; then
@@ -1854,6 +2105,15 @@ hy2_wg_collect_profiles() {
       target="${remote_target:-127.0.0.1:51820} via $server_host:$server_port"
       hy2_wg_add_profile "$profile" "iran/client" "$config" "$service" "${listen:-unknown}" "$target"
     done < <(find "$HY2_WG_CLIENT_DIR" -maxdepth 1 -type f -name '*.yaml' -print0 2>/dev/null | sort -z)
+  fi
+
+  if hy2_wg_legacy_config_present; then
+    legacy_services="$(hy2_wg_detect_services_for_config "$HY2_LEGACY_CONFIG")"
+    legacy_primary="$(printf '%s\n' "$legacy_services" | head -n 1)"
+    listen="$(hy2_wg_extract_listen_port "$HY2_LEGACY_CONFIG")"
+    masquerade_url="$(hy2_wg_masquerade_url "$HY2_LEGACY_CONFIG")"
+    target="legacy /etc/hysteria; masquerade: $masquerade_url"
+    hy2_wg_add_profile "legacy-foreign" "legacy-foreign" "$HY2_LEGACY_CONFIG" "${legacy_primary:-none}" "${listen:-unknown}" "$target"
   fi
 }
 
@@ -1915,7 +2175,8 @@ hy2_wg_select_profile() {
 
 hy2_wg_show_selected_profile_details() {
   local server_value server_host server_port remote_value remote_host remote_port
-  local sni insecure auth_secret obfs_secret service_path
+  local sni insecure auth_secret obfs_secret service_path cert_path key_path
+  local sni_guard masquerade_url obfs_type legacy_services legacy_services_text meta_path wg_iface wg_port
 
   service_path="$(hy2_wg_service_path "$HY2_SELECTED_SERVICE")"
   echo -e "${YELLOW}Profile details${NC}"
@@ -1924,10 +2185,14 @@ hy2_wg_show_selected_profile_details() {
   echo "Listen port: $HY2_SELECTED_LISTEN"
   echo "Config path: $HY2_SELECTED_CONFIG"
   echo "Service name: $HY2_SELECTED_SERVICE"
-  echo "Service path: $service_path"
+  if [[ "$HY2_SELECTED_SERVICE" != "none" ]]; then
+    echo "Service path: $service_path"
+  else
+    echo "Service path: not detected"
+  fi
   echo "Service status: $(hy2_wg_service_status_text "$HY2_SELECTED_SERVICE")"
 
-  if [[ "$HY2_SELECTED_MODE" == "iran/client" ]]; then
+  if hy2_wg_is_client_profile "$HY2_SELECTED_MODE"; then
     server_value="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "server")"
     remote_value="$(hy2_wg_extract_remote_target "$HY2_SELECTED_CONFIG")"
     hy2_wg_split_host_port "$server_value" "" "" server_host server_port
@@ -1943,12 +2208,30 @@ hy2_wg_show_selected_profile_details() {
     echo "Auth password: $(hy2_wg_mask_secret_value "$auth_secret")"
     echo "OBFS salamander password: $(hy2_wg_mask_secret_value "$obfs_secret")"
   else
-    sni="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
+    cert_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
+    key_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "key")"
+    sni_guard="$(hy2_wg_sni_guard "$HY2_SELECTED_CONFIG")"
+    masquerade_url="$(hy2_wg_masquerade_url "$HY2_SELECTED_CONFIG")"
+    obfs_type="$(hy2_wg_obfs_type "$HY2_SELECTED_CONFIG")"
     auth_secret="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "auth")"
     obfs_secret="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "salamander")"
     echo "Hysteria listen address/port: :$HY2_SELECTED_LISTEN"
-    echo "TLS cert/CN path: ${sni:-unknown}"
-    echo "WireGuard target hint: $HY2_SELECTED_TARGET"
+    echo "TLS cert path: ${cert_path:-unknown}"
+    echo "TLS key path: ${key_path:-unknown}"
+    echo "sniGuard: $sni_guard"
+    echo "Masquerade proxy URL: $masquerade_url"
+    echo "OBFS type: $obfs_type"
+    if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
+      legacy_services="$(hy2_wg_detect_services_for_config "$HY2_SELECTED_CONFIG")"
+      legacy_services_text="$(printf '%s\n' "$legacy_services" | hy2_wg_join_lines)"
+      echo "Related legacy services: ${legacy_services_text:-none detected}"
+      echo "Managed action hint: import this profile before editing, deleting, or restarting it from the toolbox."
+    else
+      meta_path="$(hy2_wg_foreign_meta_path_for_config "$HY2_SELECTED_CONFIG")"
+      wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+      echo "WireGuard target hint: ${wg_iface:-wg0}:${wg_port:-51820}"
+    fi
     echo "Auth password: $(hy2_wg_mask_secret_value "$auth_secret")"
     echo "OBFS salamander password: $(hy2_wg_mask_secret_value "$obfs_secret")"
   fi
@@ -2133,19 +2416,27 @@ hy2_wg_edit_client_profile() {
 hy2_wg_edit_foreign_profile() {
   local current_listen current_auth current_obfs cert_path key_path wg_iface wg_port
   local new_listen new_auth new_obfs new_wg_iface new_wg_port confirm stop_confirm restart_confirm service_path config_path
-  local tls_mode
+  local tls_mode meta_path masquerade_url
+
+  if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
+    fail_line "edit legacy profile" "import the /etc/hysteria profile before editing it from this manager"
+    echo "Use: Manage Existing Hysteria2 WireGuard Forwards -> Import legacy /etc/hysteria profile"
+    return
+  fi
 
   current_listen="$(hy2_wg_extract_listen_port "$HY2_SELECTED_CONFIG")"
   current_auth="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "auth")"
   current_obfs="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "salamander")"
   cert_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
   key_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "key")"
+  masquerade_url="$(hy2_wg_masquerade_url "$HY2_SELECTED_CONFIG")"
   tls_mode="existing"
   if grep -q '^[[:space:]]*sniGuard:[[:space:]]*disable' "$HY2_SELECTED_CONFIG"; then
     tls_mode="self-signed"
   fi
-  wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
-  wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+  meta_path="$(hy2_wg_foreign_meta_path_for_config "$HY2_SELECTED_CONFIG")"
+  wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+  wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
 
   new_listen="$(prompt_default "Hysteria listen UDP port" "${current_listen:-8080}")"
   hy2_wg_validate_edit_port "Hysteria listen UDP port" "$new_listen" "true" || return 0
@@ -2182,14 +2473,14 @@ hy2_wg_edit_foreign_profile() {
 
   backup_existing_file "$HY2_SELECTED_CONFIG"
   [[ -f "$service_path" ]] && backup_existing_file "$service_path"
-  hy2_wg_write_foreign_config "$new_listen" "$new_auth" "$new_obfs" "$tls_mode" "$cert_path" "$key_path"
+  hy2_wg_write_foreign_config "$new_listen" "$new_auth" "$new_obfs" "$tls_mode" "$cert_path" "$key_path" "$masquerade_url" "$HY2_SELECTED_CONFIG"
   config_path="$HY2_WRITTEN_CONFIG"
   hy2_wg_write_service "$HY2_SELECTED_SERVICE" "server" "$config_path" "VIPTrue Hysteria2 OBFS WireGuard foreign server"
   {
     echo "wg_iface=$new_wg_iface"
     echo "wg_port=$new_wg_port"
-  } > "$HY2_WG_DIR/foreign.meta"
-  chmod 600 "$HY2_WG_DIR/foreign.meta" 2>/dev/null || true
+  } > "$meta_path"
+  chmod 600 "$meta_path" 2>/dev/null || true
   hy2_wg_validate_config_required_fields "foreign" "$config_path" || { pause; return; }
   systemctl daemon-reload
   read -r -p "Restart $HY2_SELECTED_SERVICE now? [Y/n]: " restart_confirm
@@ -2241,14 +2532,20 @@ hy2_wg_manage_delete_profile() {
   line
   hy2_wg_select_profile || { pause; return; }
   echo
+  if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
+    fail_line "delete legacy profile" "raw /etc/hysteria files are not archived by this manager"
+    echo "Use Import legacy /etc/hysteria profile first; imported managed files can then be archived safely."
+    pause
+    return
+  fi
   service_path="$(hy2_wg_service_path "$HY2_SELECTED_SERVICE")"
   cert_path=""
   key_path=""
   meta_path=""
-  if [[ "$HY2_SELECTED_MODE" == "foreign" ]]; then
+  if hy2_wg_is_foreign_profile "$HY2_SELECTED_MODE"; then
     cert_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
     key_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "key")"
-    meta_path="$HY2_WG_DIR/foreign.meta"
+    meta_path="$(hy2_wg_foreign_meta_path_for_config "$HY2_SELECTED_CONFIG")"
   fi
 
   echo -e "${YELLOW}Delete plan${NC}"
@@ -2309,6 +2606,11 @@ hy2_wg_manage_restart_profile() {
   line
   hy2_wg_select_profile || { pause; return; }
   echo
+  if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
+    fail_line "restart legacy profile" "import the /etc/hysteria profile before restarting it from this manager"
+    pause
+    return
+  fi
   ensure_root || { pause; return; }
   require_cmd systemctl systemd || { pause; return; }
   systemctl daemon-reload
@@ -2327,7 +2629,7 @@ hy2_wg_manage_restart_profile() {
 }
 
 hy2_wg_manage_test_profile() {
-  local server_value server_host server_port remote_value remote_host remote_port wg_iface wg_port
+  local server_value server_host server_port remote_value remote_host remote_port wg_iface wg_port meta_path
 
   title
   echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Test Profile${NC}"
@@ -2335,10 +2637,14 @@ hy2_wg_manage_test_profile() {
   hy2_wg_select_profile || { pause; return; }
   echo
 
-  if [[ "$HY2_SELECTED_MODE" == "foreign" ]]; then
-    wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
-    wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+  if hy2_wg_is_foreign_profile "$HY2_SELECTED_MODE"; then
+    meta_path="$(hy2_wg_foreign_meta_path_for_config "$HY2_SELECTED_CONFIG")"
+    wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
+    wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
     hy2_wg_foreign_post_tests "$HY2_SELECTED_SERVICE" "$HY2_SELECTED_LISTEN" "${wg_iface:-wg0}" "${wg_port:-51820}"
+    if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
+      warn_line "legacy management" "import this profile before editing, deleting, or restarting it from the toolbox"
+    fi
     echo
     echo "Optional next step: Hysteria2 OBFS -> WireGuard Forward -> Wait for WireGuard Handshake"
   else
@@ -2360,6 +2666,242 @@ hy2_wg_manage_test_profile() {
   pause
 }
 
+hy2_wg_manage_import_legacy_profile() {
+  local profile listen_port service_name dest_dir dest_config dest_cert dest_key meta_path service_path
+  local legacy_services legacy_services_text wg_iface wg_port confirm start_now disable_old service active_ok stamp archive_dir
+
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Import legacy /etc/hysteria profile${NC}"
+  line
+  echo
+
+  if ! hy2_wg_legacy_config_present; then
+    fail_line "legacy profile" "expected $HY2_LEGACY_CONFIG, $HY2_LEGACY_CERT, and $HY2_LEGACY_KEY"
+    set_summary \
+      "Legacy /etc/hysteria profile detection." \
+      "The legacy config, cert, or key file was not found." \
+      "Check the legacy paths or create a Hysteria2 profile before importing." \
+      "No server-side change was made."
+    print_summary
+    pause
+    return
+  fi
+
+  listen_port="$(hy2_wg_extract_listen_port "$HY2_LEGACY_CONFIG")"
+  hy2_wg_validate_edit_port "Legacy Hysteria UDP listen port" "$listen_port" "true" || { pause; return; }
+
+  profile="$(prompt_default "Managed legacy profile name" "legacy-foreign")"
+  if ! valid_profile_name "$profile"; then
+    fail_line "profile name" "use 1-32 letters, numbers, dot, underscore, or dash"
+    pause
+    return
+  fi
+
+  wg_iface="$(prompt_default "WireGuard interface name for tests" "wg0")"
+  if ! valid_iface "$wg_iface"; then
+    fail_line "WireGuard interface name" "invalid interface name"
+    pause
+    return
+  fi
+
+  wg_port="$(prompt_default "WireGuard local UDP port for tests" "51820")"
+  hy2_wg_validate_edit_port "WireGuard local UDP port" "$wg_port" "false" || { pause; return; }
+
+  service_name="$(hy2_wg_legacy_service_name "$profile")"
+  dest_dir="$HY2_WG_LEGACY_DIR/$profile"
+  dest_config="$dest_dir/config.yaml"
+  dest_cert="$dest_dir/server.crt"
+  dest_key="$dest_dir/server.key"
+  meta_path="$dest_dir/profile.meta"
+  service_path="$(hy2_wg_service_path "$service_name")"
+  legacy_services="$(hy2_wg_detect_services_for_config "$HY2_LEGACY_CONFIG")"
+  legacy_services_text="$(printf '%s\n' "$legacy_services" | hy2_wg_join_lines)"
+
+  echo -e "${YELLOW}Import plan${NC}"
+  echo "Legacy config: $HY2_LEGACY_CONFIG"
+  echo "Legacy cert/key: $HY2_LEGACY_CERT / $HY2_LEGACY_KEY"
+  echo "Legacy listen port: $listen_port"
+  echo "Related old service(s): ${legacy_services_text:-none detected}"
+  echo "Managed directory: $dest_dir"
+  echo "Managed service: $service_name"
+  echo "Old files and old service will stay in place unless you explicitly disable the old service after import."
+  echo "Existing managed files will be archived before replacement."
+  echo
+  read -r -p "Import this legacy profile now? [y/N]: " confirm
+  case "$confirm" in y|Y|yes|YES) ;; *) info_line "legacy import" "cancelled before writing files"; pause; return ;; esac
+
+  ensure_root || { pause; return; }
+  require_cmd systemctl systemd || { pause; return; }
+  ensure_hy2_wg_dirs
+  mkdir -p "$dest_dir" "$HY2_SYSTEMD_SYSTEM_DIR"
+  chmod 700 "$dest_dir" 2>/dev/null || true
+
+  stamp="$(date +%Y%m%d-%H%M%S)-import-$profile"
+  archive_dir="$HY2_WG_ARCHIVE_DIR/$stamp"
+  mkdir -p "$archive_dir"
+  chmod 700 "$archive_dir" 2>/dev/null || true
+  cp -a "$HY2_LEGACY_CONFIG" "$archive_dir/source-config.yaml"
+  cp -a "$HY2_LEGACY_CERT" "$archive_dir/source-server.crt"
+  cp -a "$HY2_LEGACY_KEY" "$archive_dir/source-server.key"
+  pass_line "legacy backup" "$archive_dir"
+
+  hy2_wg_archive_existing_path "$dest_config" "$archive_dir"
+  hy2_wg_archive_existing_path "$dest_cert" "$archive_dir"
+  hy2_wg_archive_existing_path "$dest_key" "$archive_dir"
+  hy2_wg_archive_existing_path "$meta_path" "$archive_dir"
+  hy2_wg_archive_existing_path "$service_path" "$archive_dir"
+
+  cp -a "$HY2_LEGACY_CERT" "$dest_cert"
+  cp -a "$HY2_LEGACY_KEY" "$dest_key"
+  hy2_wg_copy_legacy_config_for_import "$HY2_LEGACY_CONFIG" "$dest_config" "$dest_cert" "$dest_key"
+  chmod 600 "$dest_config" "$dest_key" 2>/dev/null || true
+  chmod 644 "$dest_cert" 2>/dev/null || true
+
+  {
+    echo "source_config=$HY2_LEGACY_CONFIG"
+    echo "source_services=${legacy_services_text:-none}"
+    echo "wg_iface=$wg_iface"
+    echo "wg_port=$wg_port"
+  } > "$meta_path"
+  chmod 600 "$meta_path" 2>/dev/null || true
+
+  hy2_wg_write_service "$service_name" "server" "$dest_config" "VIPTrue Hysteria2 legacy imported foreign server $profile"
+  hy2_wg_validate_config_required_fields "foreign" "$dest_config" || { pause; return; }
+  systemctl daemon-reload
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  active_ok="false"
+  if [[ "$start_now" == "true" ]]; then
+    if systemctl enable --now "$service_name"; then
+      sleep 1
+      if hy2_wg_service_active "$service_name"; then
+        active_ok="true"
+        pass_line "$service_name" "active"
+      else
+        fail_line "$service_name" "not active after start attempt"
+      fi
+    else
+      fail_line "$service_name" "systemctl enable/start failed"
+    fi
+  else
+    info_line "$service_name" "written but not started"
+  fi
+
+  if [[ "$active_ok" == "true" && -n "${legacy_services_text:-}" ]]; then
+    read -r -p "Disable old legacy service(s) now? [y/N]: " disable_old
+    case "$disable_old" in
+      y|Y|yes|YES)
+        while IFS= read -r service; do
+          [[ -n "$service" && "$service" != "$service_name" ]] || continue
+          systemctl disable --now "$service" 2>/dev/null || true
+          pass_line "old service disable attempted" "$service"
+        done <<< "$legacy_services"
+        ;;
+      *) info_line "old legacy service" "left enabled/running unless you stop it manually" ;;
+    esac
+  else
+    warn_line "old legacy service" "not disabled; managed service is not confirmed active or no old service was detected"
+  fi
+
+  echo
+  echo "Imported profile path: $dest_dir"
+  echo "Rollback archive: $archive_dir"
+  echo "Next test: Manage Existing Hysteria2 WireGuard Forwards -> Test Profile"
+  set_summary \
+    "Legacy /etc/hysteria import into the managed Hysteria2 WireGuard directory." \
+    "If import or start failed, the config/service output above identifies the failed layer." \
+    "Run Test Profile, then Check legacy conflicts before moving traffic." \
+    "Maybe: disable the old service only after the imported service is active and tested."
+  print_summary
+  pause
+}
+
+hy2_wg_manage_legacy_conflicts() {
+  local legacy_port config port duplicate_found listener_output listener_count
+  local legacy_services service legacy_active imported_active profile managed_service
+
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Check legacy conflicts${NC}"
+  line
+  echo
+
+  if ! hy2_wg_legacy_config_present; then
+    fail_line "legacy profile" "expected $HY2_LEGACY_CONFIG, $HY2_LEGACY_CERT, and $HY2_LEGACY_KEY"
+    pause
+    return
+  fi
+
+  legacy_port="$(hy2_wg_extract_listen_port "$HY2_LEGACY_CONFIG")"
+  if hy2_wg_validate_edit_port "Legacy Hysteria UDP listen port" "$legacy_port" "true"; then
+    pass_line "legacy UDP listen port" "$legacy_port"
+  fi
+
+  duplicate_found="false"
+  while IFS= read -r config; do
+    [[ -n "$config" ]] || continue
+    port="$(hy2_wg_extract_listen_port "$config")"
+    [[ -n "$port" ]] || continue
+    if [[ "$port" == "$legacy_port" ]]; then
+      duplicate_found="true"
+      fail_line "duplicate managed UDP listen port" "$config also uses UDP $legacy_port"
+    fi
+  done < <(hy2_wg_each_managed_config)
+
+  if [[ "$duplicate_found" == "false" ]]; then
+    pass_line "managed UDP listen ports" "no managed config duplicates legacy UDP $legacy_port"
+  fi
+
+  listener_output="$(list_listeners udp "$legacy_port")"
+  listener_count="$(printf '%s\n' "$listener_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+  if ((listener_count > 1)); then
+    fail_line "local UDP listeners" "multiple listeners appear on UDP $legacy_port"
+    printf '%s\n' "$listener_output"
+  elif ((listener_count == 1)); then
+    pass_line "local UDP listener" "one listener appears on UDP $legacy_port"
+    printf '%s\n' "$listener_output"
+  else
+    warn_line "local UDP listener" "no local listener found on UDP $legacy_port or listener tool unavailable"
+  fi
+
+  legacy_services="$(hy2_wg_detect_services_for_config "$HY2_LEGACY_CONFIG")"
+  legacy_active="false"
+  while IFS= read -r service; do
+    [[ -n "$service" ]] || continue
+    if hy2_wg_service_active "$service"; then
+      legacy_active="true"
+      pass_line "active legacy service" "$service"
+    fi
+  done <<< "$legacy_services"
+  [[ "$legacy_active" == "true" ]] || warn_line "active legacy service" "none detected active"
+
+  imported_active="false"
+  if [[ -d "$HY2_WG_LEGACY_DIR" ]]; then
+    while IFS= read -r -d '' config; do
+      profile="$(hy2_wg_managed_legacy_profile_name "$config")"
+      managed_service="$(hy2_wg_legacy_service_name "$profile")"
+      if hy2_wg_service_active "$managed_service"; then
+        imported_active="true"
+        pass_line "active imported service" "$managed_service"
+      fi
+    done < <(find "$HY2_WG_LEGACY_DIR" -mindepth 2 -maxdepth 2 -type f -name 'config.yaml' -print0 2>/dev/null)
+  fi
+  [[ "$imported_active" == "true" ]] || warn_line "active imported service" "none detected active"
+
+  if [[ "$legacy_active" == "true" && "$imported_active" == "true" ]]; then
+    fail_line "old/new service overlap" "old legacy service and imported managed service are active at the same time"
+  else
+    pass_line "old/new service overlap" "no active old/new overlap detected"
+  fi
+
+  set_summary \
+    "Legacy config, duplicate UDP listen ports, local listeners, and old/new service overlap." \
+    "Duplicate ports or simultaneous old/new active services can make the toolbox appear to import correctly while traffic still hits the wrong service." \
+    "Stop or disable only the old service after the imported managed service is active and tested." \
+    "Maybe: service disable or firewall/provider cleanup may be needed."
+  print_summary
+  pause
+}
+
 hy2_wg_manage_existing_menu() {
   while true; do
     title
@@ -2372,12 +2914,14 @@ hy2_wg_manage_existing_menu() {
     echo "4. Delete profile"
     echo "5. Restart profile service"
     echo "6. Test profile"
-    echo "7. Back"
+    echo "7. Import legacy /etc/hysteria profile"
+    echo "8. Check legacy conflicts"
+    echo "9. Back"
     echo
     echo "Hint: If you entered the wrong WireGuard internal port, use Edit Profile and change Remote WireGuard UDP port."
     echo "Hint: If old tunnels conflict, use Delete Profile first."
     echo
-    read -r -p "Enter your choice [1-7]: " choice
+    read -r -p "Enter your choice [1-9]: " choice
 
     case "$choice" in
       1) hy2_wg_manage_list_profiles ;;
@@ -2386,7 +2930,9 @@ hy2_wg_manage_existing_menu() {
       4) hy2_wg_manage_delete_profile ;;
       5) hy2_wg_manage_restart_profile ;;
       6) hy2_wg_manage_test_profile ;;
-      7) break ;;
+      7) hy2_wg_manage_import_legacy_profile ;;
+      8) hy2_wg_manage_legacy_conflicts ;;
+      9) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
   done
