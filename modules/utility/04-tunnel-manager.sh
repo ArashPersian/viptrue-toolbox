@@ -25,6 +25,7 @@ HY2_SYSTEMD_SEARCH_DIRS="${VIPTRUE_SYSTEMD_SEARCH_DIRS:-$HY2_SYSTEMD_SYSTEM_DIR 
 HY2_DEFAULT_MASQUERADE_URL="https://www.bing.com/"
 HY2_DEFAULT_LEGACY_SNI="bing.com"
 HY2_LEGACY_SERVICE_NAME="${VIPTRUE_HYSTERIA_LEGACY_SERVICE:-hysteria-server.service}"
+HY2_WG_SYNTHETIC_TMP_DIR="${VIPTRUE_HY2_WG_SYNTHETIC_TMP_DIR:-/tmp/viptrue-wg-synthetic}"
 HY2_PROMPTED_PORT=""
 HY2_WRITTEN_CONFIG=""
 
@@ -1928,6 +1929,770 @@ hy2_wg_wait_for_wireguard_handshake() {
   pause
 }
 
+valid_wg_public_key() {
+  local value="$1"
+
+  [[ "$value" =~ ^[A-Za-z0-9+/]{43}=$ ]]
+}
+
+hy2_wg_validate_timeout() {
+  local label="$1"
+  local timeout="$2"
+  local max="${3:-900}"
+
+  if ! [[ "$timeout" =~ ^[0-9]+$ ]] || ((timeout < 1 || timeout > max)); then
+    fail_line "$label" "enter 1-$max seconds"
+    return 1
+  fi
+}
+
+hy2_wg_peer_exists() {
+  local iface="$1"
+  local peer="$2"
+
+  wg show "$iface" peers 2>/dev/null | grep -Fxq -- "$peer"
+}
+
+hy2_wg_iface_listen_port() {
+  local iface="$1"
+
+  wg show "$iface" listen-port 2>/dev/null | awk 'NR == 1 {print $1}'
+}
+
+hy2_wg_active_hysteria_service_name() {
+  local service
+  local -a candidates=(
+    "$(hy2_wg_service_name "foreign")"
+    "$HY2_LEGACY_SERVICE_NAME"
+    "hysteria.service"
+    "hysteria-server.service"
+    "hysteria2.service"
+    "hysteria2-server.service"
+  )
+
+  for service in "${candidates[@]}"; do
+    if hy2_wg_service_active "$service"; then
+      printf '%s\n' "$service"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+hy2_wg_synthetic_prepare_foreign_peer() {
+  local wg_iface peer_pub allowed_ip label current_hs current_transfer
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > Foreign: prepare temporary WG peer${NC}"
+  line
+  echo
+
+  wg_iface="$(prompt_default "WireGuard interface" "wg0")"
+  read -r -p "Temporary test peer public key from Iran side: " peer_pub
+  allowed_ip="$(prompt_default "Temporary allowed IP" "10.255.255.2/32")"
+  read -r -p "Optional label/comment for display only: " label
+
+  if ! valid_iface "$wg_iface"; then
+    fail_line "WireGuard interface" "use 1-15 characters: letters, numbers, dot, underscore, colon, dash"
+    pause
+    return
+  fi
+
+  if ! valid_wg_public_key "$peer_pub"; then
+    fail_line "temporary peer public key" "paste a WireGuard public key, not a private key"
+    pause
+    return
+  fi
+
+  if ! valid_cidr "$allowed_ip"; then
+    fail_line "temporary allowed IP" "use IPv4/CIDR like 10.255.255.2/32"
+    pause
+    return
+  fi
+
+  ensure_root || { pause; return; }
+  require_cmd wg wireguard-tools || { pause; return; }
+
+  if ! wg show "$wg_iface" >/dev/null 2>&1; then
+    fail_line "WireGuard interface $wg_iface" "wg show failed"
+    pause
+    return
+  fi
+
+  echo
+  echo -e "${YELLOW}Foreign WireGuard public key${NC}"
+  wg show "$wg_iface" public-key
+
+  echo
+  info_line "temporary peer label" "${label:-none}"
+  if wg set "$wg_iface" peer "$peer_pub" allowed-ips "$allowed_ip"; then
+    pass_line "temporary peer added" "$peer_pub allowed-ips $allowed_ip"
+  else
+    fail_line "temporary peer added" "wg set failed"
+    pause
+    return
+  fi
+
+  echo
+  echo "Rollback command:"
+  echo "  wg set $wg_iface peer $peer_pub remove"
+
+  current_hs="$(wg_latest_handshake_value "$wg_iface" "$peer_pub")"
+  current_transfer="$(wg_transfer_total_value "$wg_iface" "$peer_pub")"
+  if hy2_wg_peer_exists "$wg_iface" "$peer_pub"; then
+    pass_line "peer presence" "peer is present on $wg_iface"
+  else
+    fail_line "peer presence" "peer was not found after wg set"
+  fi
+
+  if ((current_hs > 0)); then
+    pass_line "current handshake" "$current_hs"
+  else
+    warn_line "current handshake" "none yet; run the Iran synthetic client"
+  fi
+  info_line "current transfer bytes" "$current_transfer"
+
+  set_summary \
+    "Foreign WireGuard interface, temporary public peer key, and allowed IP." \
+    "No handshake yet is normal until the Iran synthetic client runs." \
+    "Run Synthetic WireGuard Handshake Test -> Iran: generate/run temporary WG client." \
+    "Yes: remove the temporary peer with the printed rollback command after testing."
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_safe_remove_key_file() {
+  local key_file="$1"
+
+  [[ -n "$key_file" ]] || return 0
+
+  if [[ ! -e "$key_file" ]]; then
+    warn_line "temporary key file" "$key_file not found"
+    return 0
+  fi
+
+  case "$key_file" in
+    "$HY2_WG_SYNTHETIC_TMP_DIR"/viptrue-wg-synthetic-*.key)
+      rm -f -- "$key_file"
+      pass_line "temporary key file removed" "$key_file"
+      ;;
+    *)
+      fail_line "temporary key file cleanup" "refusing to delete non-viptrue temp path: $key_file"
+      ;;
+  esac
+}
+
+hy2_wg_synthetic_cleanup_iran_runtime() {
+  local ifname="$1"
+  local key_file="${2:-}"
+
+  if have_cmd ip && ip link show "$ifname" >/dev/null 2>&1; then
+    if ip link del dev "$ifname"; then
+      pass_line "temporary interface removed" "$ifname"
+    else
+      fail_line "temporary interface removed" "ip link del dev $ifname failed"
+    fi
+  else
+    warn_line "temporary interface" "$ifname not found"
+  fi
+
+  hy2_wg_synthetic_safe_remove_key_file "$key_file"
+}
+
+hy2_wg_synthetic_run_iran_client() {
+  local iran_port foreign_public_key client_addr target_ip ifname timeout temp_key_file
+  local old_umask temp_public_key confirm start_ts end_hs end_transfer cleanup_now
+  local ping_ok udp_ok wg_ok
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > Iran: generate/run temporary WG client${NC}"
+  line
+  echo
+
+  hy2_prompt_non443_port "Iran local Hysteria UDP listen port" "31001" || {
+    set_summary \
+      "Iran local Hysteria UDP listen port." \
+      "UDP port 443 or an invalid port was refused." \
+      "Rerun the synthetic Iran client with a valid non-443 Hysteria listener port." \
+      "No server-side change was made."
+    print_summary
+    pause
+    return
+  }
+  iran_port="$HY2_PROMPTED_PORT"
+
+  read -r -p "Foreign WireGuard public key: " foreign_public_key
+  client_addr="$(prompt_default "Temporary test client address" "10.255.255.2/32")"
+  target_ip="$(prompt_default "Test target IP" "10.255.255.1")"
+  ifname="$(prompt_default "Temporary interface name" "wg-viptest")"
+  timeout="$(prompt_default "Timeout seconds" "30")"
+
+  if ! valid_wg_public_key "$foreign_public_key"; then
+    fail_line "Foreign WireGuard public key" "paste the public key from the foreign wg interface"
+    pause
+    return
+  fi
+
+  if ! valid_cidr "$client_addr"; then
+    fail_line "Temporary test client address" "use IPv4/CIDR like 10.255.255.2/32"
+    pause
+    return
+  fi
+
+  if ! valid_ipv4 "$target_ip"; then
+    fail_line "Test target IP" "use an IPv4 address like 10.255.255.1"
+    pause
+    return
+  fi
+
+  if ! valid_iface "$ifname"; then
+    fail_line "Temporary interface name" "use 1-15 characters: letters, numbers, dot, underscore, colon, dash"
+    pause
+    return
+  fi
+
+  hy2_wg_validate_timeout "timeout" "$timeout" 300 || { pause; return; }
+  ensure_root || { pause; return; }
+  require_cmd wg wireguard-tools || { pause; return; }
+  require_cmd ip iproute2 || { pause; return; }
+
+  mkdir -p "$HY2_WG_SYNTHETIC_TMP_DIR"
+  chmod 700 "$HY2_WG_SYNTHETIC_TMP_DIR" 2>/dev/null || true
+  old_umask="$(umask)"
+  umask 077
+  if have_cmd mktemp; then
+    temp_key_file="$(mktemp "$HY2_WG_SYNTHETIC_TMP_DIR/viptrue-wg-synthetic-${ifname}.XXXXXX.key")"
+  else
+    temp_key_file="$HY2_WG_SYNTHETIC_TMP_DIR/viptrue-wg-synthetic-${ifname}-$$.key"
+    : > "$temp_key_file"
+  fi
+  if ! wg genkey > "$temp_key_file"; then
+    umask "$old_umask"
+    fail_line "temporary WireGuard keypair" "wg genkey failed"
+    hy2_wg_synthetic_safe_remove_key_file "$temp_key_file"
+    pause
+    return
+  fi
+  umask "$old_umask"
+  chmod 600 "$temp_key_file"
+  temp_public_key="$(wg pubkey < "$temp_key_file")"
+
+  echo
+  echo -e "${YELLOW}Temporary public key for Foreign prepare mode${NC}"
+  echo "$temp_public_key"
+  info_line "private key" "stored at $temp_key_file with chmod 600; value is not printed"
+  echo
+  read -r -p "Has the foreign temporary peer been added now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      warn_line "synthetic client" "cancelled before creating interface"
+      hy2_wg_synthetic_safe_remove_key_file "$temp_key_file"
+      pause
+      return
+      ;;
+  esac
+
+  if ip link show "$ifname" >/dev/null 2>&1; then
+    fail_line "temporary interface" "$ifname already exists; run cleanup first"
+    hy2_wg_synthetic_safe_remove_key_file "$temp_key_file"
+    pause
+    return
+  fi
+
+  if ip link add dev "$ifname" type wireguard; then
+    pass_line "temporary interface created" "$ifname"
+  else
+    fail_line "temporary interface created" "ip link add failed"
+    hy2_wg_synthetic_safe_remove_key_file "$temp_key_file"
+    pause
+    return
+  fi
+
+  if ! ip addr add "$client_addr" dev "$ifname"; then
+    fail_line "temporary interface address" "ip addr add $client_addr failed"
+    hy2_wg_synthetic_cleanup_iran_runtime "$ifname" "$temp_key_file"
+    pause
+    return
+  fi
+
+  if ! wg set "$ifname" private-key "$temp_key_file" peer "$foreign_public_key" endpoint "127.0.0.1:$iran_port" allowed-ips "$target_ip/32" persistent-keepalive 5; then
+    fail_line "temporary WireGuard peer" "wg set failed"
+    hy2_wg_synthetic_cleanup_iran_runtime "$ifname" "$temp_key_file"
+    pause
+    return
+  fi
+
+  if ! ip link set up dev "$ifname"; then
+    fail_line "temporary interface up" "ip link set up failed"
+    hy2_wg_synthetic_cleanup_iran_runtime "$ifname" "$temp_key_file"
+    pause
+    return
+  fi
+
+  start_ts="$(date +%s)"
+  ping_ok="false"
+  udp_ok="false"
+  if have_cmd ping; then
+    if ping -c 3 -W 2 "$target_ip"; then
+      ping_ok="true"
+      pass_line "synthetic ping" "$target_ip replied"
+    else
+      warn_line "synthetic ping" "no reply; handshake may still be visible in wg counters"
+    fi
+  else
+    warn_line "ping command" "install iputils-ping for ICMP trigger"
+  fi
+
+  if have_cmd nc; then
+    if printf 'viptrue-wg-synthetic-test\n' | nc -u -w1 "$target_ip" 9 >/dev/null 2>&1; then
+      udp_ok="true"
+      pass_line "synthetic UDP packet" "sent to $target_ip:9"
+    else
+      warn_line "synthetic UDP packet" "nc send returned non-zero"
+    fi
+  else
+    warn_line "nc command" "install netcat-openbsd for UDP trigger"
+  fi
+
+  sleep "$timeout"
+  echo
+  echo -e "${YELLOW}Temporary WireGuard status${NC}"
+  wg show "$ifname" || true
+
+  end_hs="$(wg_latest_handshake_value "$ifname" "$foreign_public_key")"
+  end_transfer="$(wg_transfer_total_value "$ifname" "$foreign_public_key")"
+  if ((end_hs >= start_ts - 5 && end_hs > 0)); then
+    wg_ok="true"
+    pass_line "synthetic handshake" "latest handshake timestamp $end_hs"
+  else
+    wg_ok="false"
+    fail_line "synthetic handshake" "no recent handshake detected"
+  fi
+
+  if ((end_transfer > 0)); then
+    pass_line "synthetic transfer bytes" "$end_transfer"
+  else
+    fail_line "synthetic transfer bytes" "no transfer bytes recorded"
+  fi
+
+  echo
+  cleanup_now="$(prompt_yes_no_value "Remove temporary interface and key file now?" "Y")"
+  if [[ "$cleanup_now" == "true" ]]; then
+    hy2_wg_synthetic_cleanup_iran_runtime "$ifname" "$temp_key_file"
+  else
+    warn_line "temporary cleanup skipped" "remove later: ip link del dev $ifname; rm -f $temp_key_file"
+  fi
+
+  if [[ "$wg_ok" == "true" && ( "$ping_ok" == "true" || "$udp_ok" == "true" ) ]]; then
+    pass_line "final result" "temporary client sent traffic and WireGuard handshake became recent"
+  elif [[ "$wg_ok" == "true" ]]; then
+    warn_line "final result" "handshake became recent, but traffic probe did not confirm application response"
+  else
+    fail_line "final result" "synthetic WireGuard handshake was not proven"
+  fi
+
+  set_summary \
+    "Temporary Iran WireGuard client through local Hysteria listener 127.0.0.1:$iran_port." \
+    "A failed handshake usually means the Hysteria client path, foreign peer setup, or WireGuard keys/ports do not match." \
+    "Run Foreign: verify temporary handshake while the Iran test is running, then cleanup both sides." \
+    "Yes: remove the temporary peer on the foreign server after the test."
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_verify_foreign_handshake() {
+  local wg_iface peer_pub timeout start_ts start_hs start_transfer end_hs end_transfer
+  local deadline now handshake_ok transfer_ok wg_port listener_output active_service
+  local wg_port_ok hysteria_ok
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > Foreign: verify temporary handshake${NC}"
+  line
+  echo
+
+  wg_iface="$(prompt_default "WireGuard interface" "wg0")"
+  read -r -p "Temporary test peer public key: " peer_pub
+  timeout="$(prompt_default "Timeout seconds" "60")"
+
+  if ! valid_iface "$wg_iface"; then
+    fail_line "WireGuard interface" "use 1-15 characters: letters, numbers, dot, underscore, colon, dash"
+    pause
+    return
+  fi
+
+  if ! valid_wg_public_key "$peer_pub"; then
+    fail_line "temporary peer public key" "paste the public key from the Iran synthetic client"
+    pause
+    return
+  fi
+
+  hy2_wg_validate_timeout "timeout" "$timeout" 900 || { pause; return; }
+  require_cmd wg wireguard-tools || { pause; return; }
+
+  if ! wg show "$wg_iface" >/dev/null 2>&1; then
+    fail_line "WireGuard interface $wg_iface" "wg show failed"
+    pause
+    return
+  fi
+
+  if ! hy2_wg_peer_exists "$wg_iface" "$peer_pub"; then
+    fail_line "temporary peer" "peer missing on $wg_iface"
+    echo "Run Foreign: prepare temporary WG peer first."
+    pause
+    return
+  fi
+
+  wg_port="$(hy2_wg_iface_listen_port "$wg_iface")"
+  if [[ -n "$wg_port" && "$wg_port" != "0" ]]; then
+    listener_output="$(list_listeners udp "$wg_port")"
+    if [[ -n "$listener_output" ]]; then
+      wg_port_ok="true"
+      pass_line "WG port listening" "$wg_iface UDP $wg_port"
+      printf '%s\n' "$listener_output"
+    else
+      wg_port_ok="false"
+      fail_line "WG port listening" "no local UDP listener found for $wg_iface port $wg_port"
+    fi
+  else
+    wg_port_ok="false"
+    fail_line "WG port listening" "could not read listen-port for $wg_iface"
+  fi
+
+  if active_service="$(hy2_wg_active_hysteria_service_name)"; then
+    hysteria_ok="true"
+    pass_line "Hysteria service" "$active_service active"
+  else
+    hysteria_ok="false"
+    fail_line "Hysteria service" "no active foreign/legacy Hysteria service detected"
+  fi
+
+  start_ts="$(date +%s)"
+  start_hs="$(wg_latest_handshake_value "$wg_iface" "$peer_pub")"
+  start_transfer="$(wg_transfer_total_value "$wg_iface" "$peer_pub")"
+  deadline=$((start_ts + timeout))
+
+  echo
+  echo "Starting latest handshake timestamp: $start_hs"
+  echo "Starting transfer byte total: $start_transfer"
+  echo "Run the Iran synthetic client now if it is not already running."
+
+  handshake_ok="false"
+  transfer_ok="false"
+  while true; do
+    now="$(date +%s)"
+    end_hs="$(wg_latest_handshake_value "$wg_iface" "$peer_pub")"
+    end_transfer="$(wg_transfer_total_value "$wg_iface" "$peer_pub")"
+
+    if ((end_hs > start_hs || (end_hs >= start_ts - 5 && end_hs > 0))); then
+      handshake_ok="true"
+    fi
+    if ((end_transfer > start_transfer)); then
+      transfer_ok="true"
+    fi
+    if [[ "$handshake_ok" == "true" && "$transfer_ok" == "true" ]]; then
+      break
+    fi
+    if ((now >= deadline)); then
+      break
+    fi
+    sleep 3
+  done
+
+  echo
+  line
+  echo -e "${CYAN}Synthetic Foreign Verification Result${NC}"
+  if [[ "$handshake_ok" == "true" ]]; then
+    pass_line "latest handshake" "changed/recent: $end_hs"
+  else
+    fail_line "latest handshake" "no recent handshake for temporary peer"
+  fi
+
+  if [[ "$transfer_ok" == "true" ]]; then
+    pass_line "transfer bytes" "increased from $start_transfer to $end_transfer"
+  else
+    fail_line "transfer bytes" "did not increase from $start_transfer"
+  fi
+
+  if [[ "$wg_port_ok" == "true" && "$hysteria_ok" == "true" && "$handshake_ok" == "true" && "$transfer_ok" == "true" ]]; then
+    pass_line "final result" "synthetic WireGuard traffic crossed the Hysteria2 OBFS path"
+    set_summary \
+      "Foreign temporary peer handshake timestamp and transfer byte movement." \
+      "No failure detected in the checked synthetic path." \
+      "Cleanup the temporary peer/interface, then repeat only when changing tunnel settings." \
+      "Yes: remove the temporary peer from the foreign WireGuard interface."
+  else
+    fail_line "final result" "synthetic WireGuard handshake was not proven"
+    echo "Diagnosis:"
+    echo "- Iran local listener problem"
+    echo "- Hysteria client problem"
+    echo "- Foreign Hysteria server problem"
+    echo "- Wrong auth/obfs/SNI/insecure setting"
+    echo "- Foreign WG port mismatch"
+    echo "- Firewall/provider UDP block"
+    set_summary \
+      "Foreign temporary peer, Hysteria service, WG listen port, handshake timestamp, and transfer bytes." \
+      "One of the synthetic tunnel layers did not move traffic." \
+      "Check Iran listener, Hysteria credentials/SNI/insecure settings, foreign WG port, and provider UDP filtering." \
+      "Yes: at least one server-side layer likely needs action."
+  fi
+
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_cleanup_foreign_peer() {
+  local wg_iface peer_pub
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > Cleanup foreign temporary peer${NC}"
+  line
+  echo
+
+  wg_iface="$(prompt_default "WireGuard interface" "wg0")"
+  read -r -p "Temporary test peer public key: " peer_pub
+
+  if ! valid_iface "$wg_iface"; then
+    fail_line "WireGuard interface" "use 1-15 characters: letters, numbers, dot, underscore, colon, dash"
+    pause
+    return
+  fi
+
+  if ! valid_wg_public_key "$peer_pub"; then
+    fail_line "temporary peer public key" "paste the temporary public key"
+    pause
+    return
+  fi
+
+  ensure_root || { pause; return; }
+  require_cmd wg wireguard-tools || { pause; return; }
+
+  if wg set "$wg_iface" peer "$peer_pub" remove; then
+    pass_line "foreign temporary peer removed" "$peer_pub"
+  else
+    fail_line "foreign temporary peer removed" "wg set remove failed"
+  fi
+
+  if hy2_wg_peer_exists "$wg_iface" "$peer_pub"; then
+    fail_line "foreign temporary peer confirmation" "peer is still present"
+  else
+    pass_line "foreign temporary peer confirmation" "peer no longer listed on $wg_iface"
+  fi
+
+  set_summary \
+    "Foreign temporary WireGuard peer removal." \
+    "If removal failed, the interface name or public key may be wrong." \
+    "Rerun cleanup with the exact interface and public key printed by the Iran synthetic client." \
+    "Maybe: manual wg peer removal may be needed."
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_cleanup_iran_prompt() {
+  local ifname key_file
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > Cleanup Iran temporary interface/key${NC}"
+  line
+  echo
+
+  ifname="$(prompt_default "Temporary interface name" "wg-viptest")"
+  key_file="$(prompt_default "Temporary private key file path" "$HY2_WG_SYNTHETIC_TMP_DIR/viptrue-wg-synthetic-wg-viptest.key")"
+
+  if ! valid_iface "$ifname"; then
+    fail_line "Temporary interface name" "use 1-15 characters: letters, numbers, dot, underscore, colon, dash"
+    pause
+    return
+  fi
+
+  ensure_root || { pause; return; }
+  hy2_wg_synthetic_cleanup_iran_runtime "$ifname" "$key_file"
+
+  set_summary \
+    "Iran temporary WireGuard interface and viptrue synthetic key file cleanup." \
+    "If cleanup failed, the interface may not exist or the key path may not be a viptrue temp key." \
+    "Confirm no wg-viptest interface remains before rerunning the synthetic client." \
+    "Maybe: manual cleanup may be needed if a nonstandard key path was used."
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_cleanup_menu() {
+  local choice
+
+  while true; do
+    title
+    echo -e "${CYAN}Synthetic WireGuard Handshake Test > Cleanup temporary test${NC}"
+    line
+    echo
+    echo "1. Foreign: remove temporary WG peer"
+    echo "2. Iran: delete temporary interface/key"
+    echo "3. Back"
+    echo
+    read -r -p "Enter your choice [1-3]: " choice
+
+    case "$choice" in
+      1) hy2_wg_synthetic_cleanup_foreign_peer ;;
+      2) hy2_wg_synthetic_cleanup_iran_prompt ;;
+      3) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+hy2_wg_synthetic_udp_probe_foreign() {
+  local wg_port timeout listener_output
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > UDP Forward Probe > Foreign watcher${NC}"
+  line
+  echo
+
+  wg_port="$(prompt_default "Foreign local WireGuard UDP port" "51820")"
+  timeout="$(prompt_default "Watch timeout seconds" "20")"
+  if ! valid_port "$wg_port"; then
+    fail_line "Foreign local WireGuard UDP port" "ports must be 1-65535"
+    pause
+    return
+  fi
+  hy2_wg_validate_timeout "watch timeout" "$timeout" 300 || { pause; return; }
+
+  warn_line "UDP probe scope" "UDP probe proves forwarding path only if packets are observed on Foreign; it does not prove WireGuard authentication."
+  if have_cmd tcpdump; then
+    if have_cmd timeout; then
+      info_line "tcpdump watcher" "watching udp port $wg_port for up to $timeout seconds"
+      timeout "$timeout" tcpdump -n -i any "udp port $wg_port" -c 5 || true
+    else
+      warn_line "timeout command" "not found; tcpdump will stop after 5 packets or Ctrl-C"
+      tcpdump -n -i any "udp port $wg_port" -c 5 || true
+    fi
+  else
+    warn_line "tcpdump" "not installed; using ss/journal fallback"
+    listener_output="$(list_listeners udp "$wg_port")"
+    if [[ -n "$listener_output" ]]; then
+      pass_line "local UDP listener on $wg_port" "found"
+      printf '%s\n' "$listener_output"
+    else
+      warn_line "local UDP listener on $wg_port" "not found"
+    fi
+    if have_cmd journalctl; then
+      echo
+      echo -e "${YELLOW}Recent Hysteria/WireGuard logs if available${NC}"
+      journalctl -n 30 --no-pager 2>/dev/null | grep -Ei 'hysteria|wireguard|wg' || true
+    fi
+  fi
+
+  set_summary \
+    "Foreign UDP watcher/fallback on the WireGuard UDP port." \
+    "No observed packet means Iran probe, Hysteria forwarding, service config, or provider UDP may be failing." \
+    "Run the Iran UDP probe while the foreign watcher is active." \
+    "Maybe: service, config, or firewall/provider changes may be needed."
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_udp_probe_iran() {
+  local iran_port sent
+
+  title
+  echo -e "${CYAN}Synthetic WireGuard Handshake Test > UDP Forward Probe > Iran sender${NC}"
+  line
+  echo
+
+  hy2_prompt_non443_port "Iran local Hysteria UDP listen port" "31001" || {
+    set_summary \
+      "Iran local Hysteria UDP listen port for UDP-only probe." \
+      "UDP port 443 or an invalid port was refused." \
+      "Rerun UDP Forward Probe with a valid non-443 local Hysteria listener port." \
+      "No server-side change was made."
+    print_summary
+    pause
+    return
+  }
+  iran_port="$HY2_PROMPTED_PORT"
+  warn_line "UDP probe scope" "UDP probe proves forwarding path only if packets are observed on Foreign; it does not prove WireGuard authentication."
+
+  sent="false"
+  if have_cmd nc; then
+    if printf 'viptrue-udp-forward-probe\n' | nc -u -w1 127.0.0.1 "$iran_port" >/dev/null 2>&1; then
+      sent="true"
+      pass_line "UDP probe packet" "sent with nc to 127.0.0.1:$iran_port"
+    else
+      warn_line "UDP probe packet" "nc returned non-zero"
+    fi
+  fi
+
+  if [[ "$sent" == "false" ]]; then
+    if (printf 'viptrue-udp-forward-probe\n' >"/dev/udp/127.0.0.1/$iran_port") 2>/dev/null; then
+      sent="true"
+      pass_line "UDP probe packet" "sent with bash /dev/udp to 127.0.0.1:$iran_port"
+    else
+      fail_line "UDP probe packet" "nc unavailable/failed and bash /dev/udp failed"
+    fi
+  fi
+
+  set_summary \
+    "Iran UDP-only probe to local Hysteria listener 127.0.0.1:$iran_port." \
+    "This does not prove WireGuard authentication; it only helps check whether a UDP payload reaches the foreign WG port." \
+    "Confirm packets on Foreign watcher, then run the synthetic WireGuard handshake test for real proof." \
+    "Maybe: Iran Hysteria client/service or provider UDP may need attention."
+  print_summary
+  pause
+}
+
+hy2_wg_synthetic_udp_probe_menu() {
+  local choice
+
+  while true; do
+    title
+    echo -e "${CYAN}Synthetic WireGuard Handshake Test > UDP-only fallback probe${NC}"
+    line
+    echo
+    echo "1. Foreign: watch WireGuard UDP port"
+    echo "2. Iran: send UDP packet to local Hysteria listener"
+    echo "3. Back"
+    echo
+    read -r -p "Enter your choice [1-3]: " choice
+
+    case "$choice" in
+      1) hy2_wg_synthetic_udp_probe_foreign ;;
+      2) hy2_wg_synthetic_udp_probe_iran ;;
+      3) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+hy2_wg_synthetic_menu() {
+  local choice
+
+  while true; do
+    title
+    echo -e "${CYAN}Synthetic WireGuard Handshake Test${NC}"
+    line
+    echo
+    echo "1. Foreign: prepare temporary WG peer"
+    echo "2. Iran: generate/run temporary WG client"
+    echo "3. Foreign: verify temporary handshake"
+    echo "4. Cleanup temporary test"
+    echo "5. UDP-only fallback probe"
+    echo "6. Back"
+    echo
+    read -r -p "Enter your choice [1-6]: " choice
+
+    case "$choice" in
+      1) hy2_wg_synthetic_prepare_foreign_peer ;;
+      2) hy2_wg_synthetic_run_iran_client ;;
+      3) hy2_wg_synthetic_verify_foreign_handshake ;;
+      4) hy2_wg_synthetic_cleanup_menu ;;
+      5) hy2_wg_synthetic_udp_probe_menu ;;
+      6) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 hy2_wg_trim() {
   local value="$1"
 
@@ -3196,17 +3961,19 @@ hy2_wg_forward_menu() {
     echo "2. Legacy Proven Foreign Mode (/etc/hysteria + Bing masquerade)"
     echo "3. Iran server mode"
     echo "4. Wait for WireGuard Handshake"
-    echo "5. Manage Existing Hysteria2 WireGuard Forwards"
+    echo "5. Synthetic WireGuard Handshake Test"
+    echo "6. Manage Existing Hysteria2 WireGuard Forwards"
     echo "0. Back"
     echo
-    read -r -p "Enter your choice [0-5]: " choice
+    read -r -p "Enter your choice [0-6]: " choice
 
     case "$choice" in
       1) hy2_wg_setup_foreign_server ;;
       2) hy2_wg_setup_legacy_proven_foreign_server ;;
       3) hy2_wg_setup_iran_server ;;
       4) hy2_wg_wait_for_wireguard_handshake ;;
-      5) hy2_wg_manage_existing_menu ;;
+      5) hy2_wg_synthetic_menu ;;
+      6) hy2_wg_manage_existing_menu ;;
       0) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac

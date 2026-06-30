@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.8 - Unreleased
+
+- Added a Synthetic WireGuard Handshake Test submenu for Hysteria2 OBFS
+  WireGuard forwards.
+- Added foreign temporary peer preparation, Iran temporary WireGuard client
+  generation, foreign handshake verification, cleanup, and UDP-only fallback
+  probes.
+- Kept synthetic keys/interfaces temporary by default, with private keys stored
+  under a VIPTrue temp directory, `chmod 600`, and deleted by default.
+- Added diagnosis output for Iran listener issues, Hysteria client/server
+  issues, credential/SNI/insecure mismatches, WireGuard port mismatches, and
+  UDP firewall/provider blocks.
+
 ## 0.3.7 - Unreleased
 
 - Added Legacy Proven Foreign Mode for `/etc/hysteria` with self-signed TLS,

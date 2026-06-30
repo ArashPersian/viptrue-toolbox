@@ -1,9 +1,9 @@
 # Project State
 
-Version: 0.3.7
-Branch: fasttrack/hysteria-legacy-proven-mode
-Base commit: ebd18c7 Merge pull request #6 from ArashPersian/fasttrack/hysteria-legacy-import
-Commit: a6e7967 Add Hysteria2 legacy proven mode
+Version: 0.3.8
+Branch: fasttrack/hysteria-wg-synthetic-test
+Base commit: 7686423 Merge pull request #7 from ArashPersian/fasttrack/hysteria-legacy-proven-mode
+Commit: c5259ae Add synthetic WireGuard handshake test
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
@@ -12,24 +12,22 @@ Release status: no release or tag planned for this batch
 Local checks:
 
 - Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
-- Passed: menu smoke test to reach `Legacy Proven Foreign Mode (/etc/hysteria + Bing masquerade)`
-- Passed: port `443` guard for Legacy Proven Foreign Mode
-- Passed: fixture detection for `/etc/hysteria/config.yaml` as `legacy-proven-foreign`
-- Passed: secret masking for legacy proven profile details
-- Passed: Iran Server Mode legacy proven preset defaults to UDP `2087`, SNI `bing.com`, insecure TLS, and WireGuard target `127.0.0.1:51820`
-- Passed: OpenSSL self-signed certificate generation smoke test for CN `bing.com`
-- Passed: static backup-path check for `/etc/hysteria/config.yaml` and cert/key regeneration
+- Passed: menu smoke test to reach `Synthetic WireGuard Handshake Test`
+- Passed: forbidden UDP `443` guard in the synthetic Iran client path
+- Passed: no-private-key-print static check for generated temporary key handling
+- Passed: temporary interface cleanup command static check
+- Passed: foreign temporary peer remove command static check
 - Passed: `git diff --check`
-- Not run locally: ShellCheck is not installed in this Windows/Git Bash environment
+- Not run locally: ShellCheck is not installed in PowerShell or Git Bash on this Windows workspace
 
 ## Remaining Issues
 
-- The legacy repo contains many historical step scripts that are not part of
-  this cleanup batch.
-- Legacy proven setup, real service restart, listener checks, and WireGuard
-  handshake proof still require disposable VPS validation before any production
-  PasarGuard traffic is moved.
+- Synthetic WireGuard handshake execution still requires disposable Iran and
+  foreign VPS validation with real `wg`, `ip`, Hysteria2 services, and UDP
+  reachability.
+- The UDP-only fallback probe can show forwarding evidence but does not prove
+  WireGuard authentication.
 
 ## Next Exact Step
 
-Open the Hysteria2 legacy proven mode PR and review advisory ShellCheck results.
+Open the synthetic WireGuard handshake test PR and review GitHub ShellCheck.
