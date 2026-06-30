@@ -3,7 +3,7 @@
 Version: 0.4.2
 Branch: fasttrack/auto-tunnel-expert-ux
 Base commit: e083d8a Merge pull request #11 from ArashPersian/fasttrack/tunnel-engine-registry-scanner
-Commit: pending
+Commit: 603f601 Polish Auto Tunnel Expert scan UX
 PR status: not opened yet
 Release status: no release, tag, or deploy planned for this batch
 
