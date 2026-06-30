@@ -3,7 +3,7 @@
 Version: 0.3.9
 Branch: fasttrack/synthetic-test-dependency-installer
 Base commit: c5d62d0 Merge pull request #8 from ArashPersian/fasttrack/hysteria-wg-synthetic-test
-Commit: pending local commit
+Commit: 098f12d Add synthetic test dependency installer
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
