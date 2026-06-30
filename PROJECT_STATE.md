@@ -3,7 +3,7 @@
 Version: 0.3.6
 Branch: fasttrack/hysteria-legacy-import
 Base commit: 4edfa71 Merge pull request #5 from ArashPersian/fasttrack/hysteria-wg-profile-management
-Commit: pending
+Commit: b45f9b0 Add Hysteria2 legacy import management
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
