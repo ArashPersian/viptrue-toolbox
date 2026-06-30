@@ -3,7 +3,7 @@
 Version: 0.3.8
 Branch: fasttrack/hysteria-wg-synthetic-test
 Base commit: 7686423 Merge pull request #7 from ArashPersian/fasttrack/hysteria-legacy-proven-mode
-Commit: pending local commit
+Commit: c5259ae Add synthetic WireGuard handshake test
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
