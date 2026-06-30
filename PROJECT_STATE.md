@@ -1,54 +1,54 @@
 # Project State
 
-Version: 0.4.1
-Branch: fasttrack/tunnel-engine-registry-scanner
-Base commit: 853921a Merge pull request #10 from ArashPersian/fasttrack/auto-tunnel-wizard
-Commit: 77120c9 Add tunnel engine registry scanner
+Version: 0.4.2
+Branch: fasttrack/auto-tunnel-expert-ux
+Base commit: e083d8a Merge pull request #11 from ArashPersian/fasttrack/tunnel-engine-registry-scanner
+Commit: pending
 PR status: not opened yet
-Release status: no release or tag planned for this batch
+Release status: no release, tag, or deploy planned for this batch
 
 ## Scope
 
-- Add Auto Tunnel Expert as the strategic Tunnel Manager product path.
-- Add a shell-native engine registry with scanner-oriented metadata.
-- Add adaptive Pairing Mode scanner prompts and ranked engine output.
-- Build only the proven Hysteria2 OBFS UDP generic forward in this PR.
-- Keep WireGuard and Xray as destination examples, not generic scanner
-  requirements.
-- Preserve existing manual Hysteria2, WireGuard, GRE, legacy, and synthetic
-  tooling under Manual Tunnel Lab and the existing management menus.
+- Polish Auto Tunnel Expert scan output for operator readability.
+- Add a scan summary card before rankings.
+- Hide the full 49-engine ranking by default.
+- Group engines by buildability and operator intent.
+- Add scan options for compact/full/buildable/priority/emergency/proof views.
+- Save scan bundles and v2 tunnel bundles to copy-friendly files.
+- Keep WireGuard and Xray as application-specific presets, not top generic
+  recommendations.
 
 ## Checks
 
 Local checks:
 
 - Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
-- Passed: menu smoke to `Tunnel Manager -> Auto Tunnel Expert`
-- Passed: menu smoke to `Auto Tunnel Expert -> Show Engine Registry`
-- Passed: menu smoke to `Auto Tunnel Expert -> Scan Best Tunnel Between Two Servers`
-- Passed: menu smoke to `Auto Tunnel Expert -> Build Selected Tunnel From Scan Result`
-- Passed: menu smoke that Manual Tunnel Lab is still reachable
-- Passed: registry smoke with 49 engines and required families/statuses
-- Passed: no-WireGuard/no-Xray generic build-output check
-- Passed: multi-foreign preservation static check
-- Passed: v2 bundle parser tests for valid bundle, missing auth, missing obfs,
-  invalid port, and forbidden Hysteria UDP `443`
-- Passed: secret handling/static check for runtime bundle warnings and no
-  private-key printing in the generic flow
-- Passed: no `undetectable` wording check
 - Passed: `git diff --check`
+- Passed: Auto Tunnel Expert scan menu smoke
+- Passed: Summary Card appears before tables
+- Passed: Recommended engine is clear
+- Passed: Default output hides the 49-engine ranking
+- Passed: Full ranking option shows the full registry, including
+  application-specific and emergency groups
+- Passed: Short terminal-safe ranking headers
+- Passed: Destination listener warning appears once in the summary card
+- Passed: WireGuard/Xray are not top generic recommendation
+- Passed: Emergency engines are grouped separately
+- Passed: Scan bundle is saved to file
+- Passed: Proof commands are optional and only printed from option 7
+- Passed: No forbidden detection wording
+- Passed: Secret bundle warning static check
+- Passed: Scan bundle says no auth/OBFS secrets
 - Not run locally: ShellCheck is unavailable in PowerShell and Git Bash PATH
 
 ## Remaining Issues
 
-- SSH Auto Mode is intentionally a placeholder; this PR does not collect SSH
-  credentials.
-- Only `hysteria2_obfs_udp` generic UDP forward is buildable from Auto Tunnel
-  Expert in this PR.
-- Live latency, packet loss, and payload-delivery scoring require real
-  Iran/Foreign server validation after merge.
+- Live latency, packet-loss, and payload-delivery scoring still require real
+  Iran/Foreign server validation.
+- TCP build remains priority-next; WaterWall Reverse TLS is recommended as next
+  TCP implementation but is not buildable yet.
 
 ## Next Exact Step
 
-Run the local validation matrix, open the Tunnel Engine Registry and Adaptive
-Scanner PR, review GitHub ShellCheck, and merge only if checks pass.
+Run the UX validation matrix, open the Auto Tunnel Expert UX Polish PR, review
+GitHub ShellCheck, and merge only if checks pass.
