@@ -3,7 +3,7 @@
 Version: 0.3.7
 Branch: fasttrack/hysteria-legacy-proven-mode
 Base commit: ebd18c7 Merge pull request #6 from ArashPersian/fasttrack/hysteria-legacy-import
-Commit: pending
+Commit: a6e7967 Add Hysteria2 legacy proven mode
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
