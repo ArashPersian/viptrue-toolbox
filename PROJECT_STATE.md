@@ -3,7 +3,7 @@
 Version: 0.4.1
 Branch: fasttrack/tunnel-engine-registry-scanner
 Base commit: 853921a Merge pull request #10 from ArashPersian/fasttrack/auto-tunnel-wizard
-Commit: pending
+Commit: 77120c9 Add tunnel engine registry scanner
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
