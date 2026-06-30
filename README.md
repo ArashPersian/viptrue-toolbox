@@ -35,6 +35,22 @@ Use Foreign server mode on each foreign WireGuard host, then Iran server mode to
 create one local UDP endpoint per foreign profile. Set each PasarGuard
 WireGuard node/profile endpoint to the printed `IRAN_IP:IRAN_PORT` value.
 
+When a real local PasarGuard client cannot reach the Iran endpoint, use the
+server-side synthetic test:
+
+```text
+Tunnel Manager -> Hysteria2 OBFS -> WireGuard Forward -> Synthetic WireGuard Handshake Test
+```
+
+The synthetic test creates a temporary Iran WireGuard client interface, sends it
+through the Iran local Hysteria listener, and verifies whether the foreign
+WireGuard interface sees a recent handshake and byte movement. It does not
+persist the temporary Iran interface, does not persist the foreign test peer to
+WireGuard config by default, and does not print the generated private key. Use
+the cleanup item afterward to remove the temporary foreign peer and Iran test
+interface/key. The UDP-only fallback probe can help debug forwarding, but it
+does not prove WireGuard authentication.
+
 For the proven legacy foreign-server layout, use:
 
 ```text
