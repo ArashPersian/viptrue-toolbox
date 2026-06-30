@@ -51,6 +51,12 @@ the cleanup item afterward to remove the temporary foreign peer and Iran test
 interface/key. The UDP-only fallback probe can help debug forwarding, but it
 does not prove WireGuard authentication.
 
+If the synthetic test needs `wg` or `ip`, it asks before installing packages.
+On apt-based systems, confirming the `wg` prompt installs `wireguard-tools` and
+`iproute2`; confirming the `ip` prompt installs `iproute2`. Keep the Iran test
+target IP at the default `10.255.255.1` unless you intentionally built a
+different synthetic WireGuard address plan.
+
 For the proven legacy foreign-server layout, use:
 
 ```text

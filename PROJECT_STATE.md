@@ -1,9 +1,9 @@
 # Project State
 
-Version: 0.3.8
-Branch: fasttrack/hysteria-wg-synthetic-test
-Base commit: 7686423 Merge pull request #7 from ArashPersian/fasttrack/hysteria-legacy-proven-mode
-Commit: c5259ae Add synthetic WireGuard handshake test
+Version: 0.3.9
+Branch: fasttrack/synthetic-test-dependency-installer
+Base commit: c5d62d0 Merge pull request #8 from ArashPersian/fasttrack/hysteria-wg-synthetic-test
+Commit: pending local commit
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
@@ -12,11 +12,11 @@ Release status: no release or tag planned for this batch
 Local checks:
 
 - Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
-- Passed: menu smoke test to reach `Synthetic WireGuard Handshake Test`
-- Passed: forbidden UDP `443` guard in the synthetic Iran client path
-- Passed: no-private-key-print static check for generated temporary key handling
-- Passed: temporary interface cleanup command static check
-- Passed: foreign temporary peer remove command static check
+- Passed: menu smoke test to Synthetic WireGuard Handshake Test
+- Passed: missing `wg` dependency prompt smoke test with controlled PATH and declined install
+- Passed: public target IP warning smoke test
+- Passed: missing `ip` / `iproute2` prompt smoke test with declined install
+- Passed: static check for exact `apt-get update && apt-get install -y ...` installer path
 - Passed: `git diff --check`
 - Not run locally: ShellCheck is not installed in PowerShell or Git Bash on this Windows workspace
 
@@ -25,9 +25,9 @@ Local checks:
 - Synthetic WireGuard handshake execution still requires disposable Iran and
   foreign VPS validation with real `wg`, `ip`, Hysteria2 services, and UDP
   reachability.
-- The UDP-only fallback probe can show forwarding evidence but does not prove
-  WireGuard authentication.
+- Interactive package installation is apt-based and only runs after explicit
+  confirmation on the target server.
 
 ## Next Exact Step
 
-Open the synthetic WireGuard handshake test PR and review GitHub ShellCheck.
+Run local validation, open the dependency installer PR, and review GitHub ShellCheck.
