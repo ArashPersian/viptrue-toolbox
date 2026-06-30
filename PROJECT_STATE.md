@@ -3,7 +3,7 @@
 Version: 0.4.0
 Branch: fasttrack/auto-tunnel-wizard
 Base commit: a6a4d0d Merge pull request #9 from ArashPersian/fasttrack/synthetic-test-dependency-installer
-Commit: pending local commit
+Commit: 9a29a4f Add Auto Tunnel Wizard
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
