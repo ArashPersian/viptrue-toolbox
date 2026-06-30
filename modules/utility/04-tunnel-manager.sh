@@ -2,697 +2,850 @@
 set -Eeuo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=lib/ui.sh
 source "$BASE_DIR/lib/ui.sh"
 
-TM_DIR="/opt/viptrue-tunnel-manager"
-STATE_DIR="$TM_DIR/state"
-LOG_DIR="$TM_DIR/logs"
-mkdir -p "$STATE_DIR" "$LOG_DIR"
+LAST_CHECKED="No diagnostics have been run yet."
+LAST_ISSUE="Run a Tunnel Manager check first."
+LAST_ACTION="Start with Preflight Checks."
+LAST_SERVER_ACTION="Unknown."
 
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+status_line() {
+  local level="$1"
+  local label="$2"
+  local detail="${3:-}"
+  local color="$NC"
+
+  case "$level" in
+    PASS) color="$GREEN" ;;
+    WARN) color="$YELLOW" ;;
+    FAIL) color="$RED" ;;
+    INFO) color="$CYAN" ;;
+  esac
+
+  printf '%b[%s]%b %s' "$color" "$level" "$NC" "$label"
+  if [[ -n "$detail" ]]; then
+    printf ' - %s' "$detail"
+  fi
+  printf '\n'
+}
+
+pass_line() {
+  status_line "PASS" "$1" "${2:-}"
+}
+
+warn_line() {
+  status_line "WARN" "$1" "${2:-}"
+}
+
+fail_line() {
+  status_line "FAIL" "$1" "${2:-}"
+}
+
+info_line() {
+  status_line "INFO" "$1" "${2:-}"
+}
+
+set_summary() {
+  LAST_CHECKED="$1"
+  LAST_ISSUE="$2"
+  LAST_ACTION="$3"
+  LAST_SERVER_ACTION="$4"
+}
+
+print_summary() {
+  echo
+  line
+  echo -e "${CYAN}Diagnostics Summary${NC}"
+  echo "Checked: $LAST_CHECKED"
+  echo "Likely issue: $LAST_ISSUE"
+  echo "Suggested next action: $LAST_ACTION"
+  echo "Server-side action needed: $LAST_SERVER_ACTION"
+  line
+}
+
+install_hint() {
+  local packages=("$@")
+
+  if have_cmd apt-get; then
+    printf 'apt-get install -y %s' "${packages[*]}"
+  elif have_cmd dnf; then
+    printf 'dnf install -y %s' "${packages[*]}"
+  elif have_cmd yum; then
+    printf 'yum install -y %s' "${packages[*]}"
+  elif have_cmd pacman; then
+    printf 'pacman -S --needed %s' "${packages[*]}"
+  else
+    printf 'install package(s): %s' "${packages[*]}"
+  fi
+}
+
+check_command() {
+  local cmd="$1"
+  local pkg="$2"
+  local hint
+
+  if have_cmd "$cmd"; then
+    pass_line "$cmd" "$(command -v "$cmd")"
+  else
+    hint="$(install_hint "$pkg")"
+    warn_line "$cmd missing" "suggest: $hint"
+  fi
+}
 
 ensure_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    echo -e "${RED}This module must be run as root.${NC}"
-    pause
-    return 1
+  if [[ "$EUID" -eq 0 ]]; then
+    return 0
+  fi
+
+  fail_line "root required for this action" "run the toolbox with sudo/root"
+  return 1
+}
+
+require_cmd() {
+  local cmd="$1"
+  local pkg="$2"
+
+  if have_cmd "$cmd"; then
+    return 0
+  fi
+
+  fail_line "$cmd missing" "suggest: $(install_hint "$pkg")"
+  return 1
+}
+
+valid_port() {
+  local port="$1"
+
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  ((port >= 1 && port <= 65535))
+}
+
+valid_ipv4() {
+  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+}
+
+valid_cidr() {
+  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]
+}
+
+valid_iface() {
+  [[ "$1" =~ ^[A-Za-z0-9_.:-]{1,15}$ ]]
+}
+
+prompt_default() {
+  local prompt="$1"
+  local default="$2"
+  local value
+
+  read -r -p "$prompt [$default]: " value
+  printf '%s\n' "${value:-$default}"
+}
+
+read_os_name() {
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s\n' "${PRETTY_NAME:-Unknown Linux}"
+  else
+    uname -a
   fi
 }
 
-pub_ip() {
-  curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null \
-    || curl -4fsS --max-time 5 https://ifconfig.me 2>/dev/null \
-    || hostname -I 2>/dev/null | awk '{print $1}' \
-    || echo "unknown"
-}
+preflight_checks() {
+  local route dns_ok public_hint
 
-safe_install_tools() {
-  local needed=()
-  for c in ip iptables ss tcpdump nc curl iperf3 mtr; do
-    have_cmd "$c" || needed+=("$c")
-  done
-  if ((${#needed[@]})); then
-    echo -e "${YELLOW}Missing tools:${NC} ${needed[*]}"
-    read -r -p "Install required packages now? [y/N]: " ans
-    case "$ans" in
-      y|Y|yes|YES)
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y \
-          iproute2 iptables iptables-persistent netcat-openbsd tcpdump curl dnsutils \
-          autossh socat stunnel4 iperf3 mtr-tiny || true
-        ;;
-    esac
+  title
+  echo -e "${CYAN}Tunnel Manager > Preflight Checks${NC}"
+  line
+  echo
+
+  info_line "OS" "$(read_os_name)"
+
+  if [[ "$EUID" -eq 0 ]]; then
+    pass_line "root status" "running as root"
+  elif have_cmd sudo && sudo -n true 2>/dev/null; then
+    pass_line "sudo status" "sudo is available without an interactive prompt"
+  else
+    warn_line "root/sudo status" "diagnostics can run, but setup commands need sudo/root"
   fi
-}
-
-save_firewall() {
-  if have_cmd netfilter-persistent; then
-    netfilter-persistent save || true
-  elif have_cmd iptables-save; then
-    mkdir -p /etc/iptables
-    iptables-save > /etc/iptables/rules.v4 || true
-  fi
-}
-
-sysctl_forwarding_on() {
-  cat > /etc/sysctl.d/99-viptrue-gre-forward.conf <<'SYS'
-net.ipv4.ip_forward=1
-net.ipv4.conf.all.rp_filter=0
-net.ipv4.conf.default.rp_filter=0
-SYS
-  sysctl --system >/dev/null || true
-}
-
-get_gre_ifaces() {
-  ip -o link show type gre 2>/dev/null | awk -F': ' '{print $2}' | awk '{print $1}' | sed 's/@.*//' || true
-}
-
-service_name_for_gre() {
-  local ifname="$1"
-  echo "viptrue-gre-${ifname}.service"
-}
-
-write_persistent_gre_service() {
-  local ifname="$1" local_pub="$2" remote_pub="$3" cidr="$4" mtu="$5"
-  local svc
-  svc="$(service_name_for_gre "$ifname")"
-
-  cat > "/etc/systemd/system/$svc" <<EOF_SVC
-[Unit]
-Description=VIPTrue persistent GRE tunnel $ifname
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStartPre=-/usr/sbin/ip tunnel del $ifname
-ExecStartPre=-/usr/sbin/modprobe ip_gre
-ExecStart=/usr/sbin/ip tunnel add $ifname mode gre remote $remote_pub local $local_pub ttl 255
-ExecStart=/usr/sbin/ip link set $ifname mtu $mtu
-ExecStart=/usr/sbin/ip addr add $cidr dev $ifname
-ExecStart=/usr/sbin/ip link set $ifname up
-ExecStop=-/usr/sbin/ip tunnel del $ifname
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-
-  systemctl daemon-reload
-  systemctl enable --now "$svc"
-
-  echo -e "${GREEN}Persistent GRE service enabled:${NC} $svc"
-  echo "Service file: /etc/systemd/system/$svc"
-}
-
-remove_persistent_gre_service() {
-  local ifname="$1"
-  local svc
-  svc="$(service_name_for_gre "$ifname")"
-  systemctl disable --now "$svc" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$svc"
-  systemctl daemon-reload
-}
-
-print_scan() {
-  echo -e "${YELLOW}OS:${NC}"
-  if [[ -f /etc/os-release ]]; then . /etc/os-release; echo "${PRETTY_NAME:-Unknown}"; else echo "Unknown"; fi
-  echo
-  echo -e "${YELLOW}Public IPv4:${NC}"
-  pub_ip
-  echo
-  echo -e "${YELLOW}Default route:${NC}"
-  ip route | grep '^default' || true
-  echo
-  echo -e "${YELLOW}GRE modules / tunnels:${NC}"
-  lsmod | grep -E '^ip_gre|^gre' || true
-  ip tunnel show || true
-  echo
-  echo -e "${YELLOW}Forwarding / rp_filter:${NC}"
-  sysctl net.ipv4.ip_forward 2>/dev/null || true
-  sysctl net.ipv4.conf.all.rp_filter 2>/dev/null || true
-  sysctl net.ipv4.conf.default.rp_filter 2>/dev/null || true
-  echo
-  echo -e "${YELLOW}Firewall:${NC}"
-  if have_cmd ufw; then ufw status || true; else echo "UFW not installed"; fi
-  echo
-  echo -e "${YELLOW}Important listeners:${NC}"
-  ss -tulpn | grep -E ':22|:80|:443|:8080|:2052|:2053|:2082|:2083|:2095|:51820|:51821|:9940|:9941' || true
-  echo
-  echo -e "${YELLOW}Persistent GRE services:${NC}"
-  systemctl list-unit-files 'viptrue-gre-*.service' 2>/dev/null || true
-}
-
-recommendations() {
-  echo
-  line
-  echo -e "${CYAN}Recommended tunnel choices${NC}"
-  echo
-  echo "1) GRE Site-to-Site"
-  echo "   Use when both servers have public IPv4 and provider allows GRE protocol 47."
-  echo "   Best for WireGuard/Hysteria behind Iran IP via UDP DNAT."
-  echo
-  echo "2) GRE + UDP Forward"
-  echo "   Use when UDP payload passes through GRE. Ping may fail while UDP still works."
-  echo "   Proven presets: WireGuard UDP 51821, Hysteria UDP 8080/443."
-  echo
-  echo "3) Reverse SSH"
-  echo "   Use for TCP-only internal services like PasarGuard pg-node gRPC/API."
-  echo "   Not suitable for high-throughput UDP."
-  echo
-  echo "4) Raw TCP / stunnel"
-  echo "   Use when only TCP can pass. stunnel wraps TCP in TLS."
-  echo
-}
-
-compatibility_scan() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Testing / Compatibility Scan${NC}"
-  line
-  ensure_root || return
-  safe_install_tools
-  print_scan
-  echo
-  read -r -p "Remote public IP to test, empty=skip: " remote_ip
-  if [[ -n "${remote_ip// /}" ]]; then
-    echo
-    echo -e "${YELLOW}ICMP public path test:${NC} $remote_ip"
-    ping -c 3 -W 2 "$remote_ip" || true
-    echo
-    read -r -p "Remote GRE tunnel IP to ping, empty=skip: " remote_tun
-    if [[ -n "${remote_tun// /}" ]]; then
-      ping -c 4 -W 2 "$remote_tun" || true
-    fi
-    echo
-    read -r -p "TCP ports to test [22,80,443]: " tcp_ports
-    tcp_ports="${tcp_ports:-22,80,443}"
-    IFS=',' read -ra tps <<< "$tcp_ports"
-    for p in "${tps[@]}"; do
-      p="${p// /}"
-      [[ -n "$p" ]] || continue
-      timeout 3 bash -c "</dev/tcp/$remote_ip/$p" >/dev/null 2>&1 && echo -e "${GREEN}TCP $p reachable${NC}" || echo -e "${YELLOW}TCP $p closed/filtered${NC}"
-    done
-    echo
-    read -r -p "UDP ports to probe with nc [51821,8080,443]: " udp_ports
-    udp_ports="${udp_ports:-51821,8080,443}"
-    IFS=',' read -ra ups <<< "$udp_ports"
-    for p in "${ups[@]}"; do
-      p="${p// /}"
-      [[ -n "$p" ]] || continue
-      echo "viptrue-udp-test" | nc -u -w1 "$remote_ip" "$p" || true
-      echo -e "${YELLOW}UDP $p probe sent. Verify on remote with:${NC} tcpdump -ni any udp port $p"
-    done
-  fi
-  recommendations
-  pause
-}
-
-gre_status() {
-  title
-  echo -e "${CYAN}Tunnel Manager > GRE Status${NC}"
-  line
-  echo -e "${YELLOW}GRE tunnels:${NC}"
-  ip tunnel show || true
-  echo
-  echo -e "${YELLOW}Tunnel addresses:${NC}"
-  ip addr | grep -A4 -E 'gre|102\.230\.9|10\.99\.' || true
-  echo
-  echo -e "${YELLOW}Routes:${NC}"
-  ip route | grep -E '102\.230\.9|gre' || true
-  echo
-  echo -e "${YELLOW}Persistent services:${NC}"
-  systemctl list-units 'viptrue-gre-*.service' --all 2>/dev/null || true
-  echo
-  read -r -p "Ping peer tunnel IP, empty=skip: " peer
-  [[ -n "$peer" ]] && ping -c 4 -W 2 "$peer" || true
-  pause
-}
-
-create_gre() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Create / Repair GRE${NC}"
-  line
-  ensure_root || return
-  echo "Role:"
-  echo "1. IRAN side:    102.230.9.1/30 -> peer 102.230.9.2"
-  echo "2. KHAREJ side:  102.230.9.2/30 -> peer 102.230.9.1"
-  read -r -p "Select role [1-2]: " role
-  local ifname cidr peer default_if
-  case "$role" in
-    1) default_if="greIR"; cidr="102.230.9.1/30"; peer="102.230.9.2" ;;
-    2) default_if="greKH"; cidr="102.230.9.2/30"; peer="102.230.9.1" ;;
-    *) echo -e "${RED}Invalid role.${NC}"; pause; return ;;
-  esac
-  local detected local_pub remote_pub mtu in_cidr persistent
-  detected="$(pub_ip)"
-  read -r -p "Local public IP [$detected]: " local_pub; local_pub="${local_pub:-$detected}"
-  read -r -p "Remote public IP: " remote_pub
-  read -r -p "Interface name [$default_if]: " ifname; ifname="${ifname:-$default_if}"
-  read -r -p "This side tunnel CIDR [$cidr]: " in_cidr; cidr="${in_cidr:-$cidr}"
-  read -r -p "MTU [1476]: " mtu; mtu="${mtu:-1476}"
-  [[ -n "$local_pub" && -n "$remote_pub" ]] || { echo -e "${RED}Local/remote IP required.${NC}"; pause; return; }
-  echo
-  echo -e "${YELLOW}Plan:${NC} $ifname remote=$remote_pub local=$local_pub cidr=$cidr mtu=$mtu"
-  echo "Runtime GRE will be created now. Persistent systemd service can also be created."
-  read -r -p "Apply? [y/N]: " ok
-  case "$ok" in y|Y|yes|YES) ;; *) echo "Cancelled."; pause; return ;; esac
-
-  ip tunnel del "$ifname" 2>/dev/null || true
-  modprobe ip_gre 2>/dev/null || true
-  ip tunnel add "$ifname" mode gre remote "$remote_pub" local "$local_pub" ttl 255
-  ip link set "$ifname" mtu "$mtu"
-  ip addr add "$cidr" dev "$ifname"
-  ip link set "$ifname" up
-
-  cat > "$STATE_DIR/gre-$ifname.env" <<STATE
-ifname=$ifname
-local_public_ip=$local_pub
-remote_public_ip=$remote_pub
-tunnel_cidr=$cidr
-mtu=$mtu
-created_at=$(date -Is)
-STATE
-
-  echo -e "${GREEN}GRE configured.${NC}"
-  ip addr show "$ifname"
-  echo
-  read -r -p "Make this GRE persistent after reboot with systemd? [Y/n]: " persistent
-  persistent="${persistent:-Y}"
-  case "$persistent" in
-    y|Y|yes|YES)
-      write_persistent_gre_service "$ifname" "$local_pub" "$remote_pub" "$cidr" "$mtu"
-      ;;
-    *)
-      echo -e "${YELLOW}Persistent service skipped. GRE will disappear after reboot.${NC}"
-      ;;
-  esac
-  echo
-  echo "When both sides are ready: ping -c 4 $peer"
-  echo "Note: ping may fail while UDP/WireGuard over GRE still works. Use Quality Tests."
-  pause
-}
-
-remove_gre() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Remove GRE${NC}"
-  line
-  ensure_root || return
-  echo "Existing GRE interfaces:"
-  get_gre_ifaces || true
-  echo
-  echo "Persistent GRE services:"
-  systemctl list-unit-files 'viptrue-gre-*.service' 2>/dev/null || true
-  echo
-  read -r -p "Interface to remove [greIR/greKH]: " ifname
-  [[ -n "$ifname" ]] || { echo "Empty."; pause; return; }
-  ip tunnel del "$ifname" 2>/dev/null || true
-  remove_persistent_gre_service "$ifname"
-  rm -f "$STATE_DIR/gre-$ifname.env" 2>/dev/null || true
-  echo -e "${GREEN}Removed runtime and persistent GRE if existed:${NC} $ifname"
-  pause
-}
-
-udp_forward_status() {
-  title
-  echo -e "${CYAN}Tunnel Manager > UDP Forward Status${NC}"
-  line
-  echo -e "${YELLOW}NAT PREROUTING:${NC}"
-  iptables -t nat -L PREROUTING -n -v --line-numbers | sed -n '1,160p'
-  echo
-  echo -e "${YELLOW}NAT POSTROUTING:${NC}"
-  iptables -t nat -L POSTROUTING -n -v --line-numbers | sed -n '1,160p'
-  echo
-  echo -e "${YELLOW}FORWARD:${NC}"
-  iptables -L FORWARD -n -v --line-numbers | sed -n '1,160p'
-  echo
-  sysctl net.ipv4.ip_forward 2>/dev/null || true
-  pause
-}
-
-setup_udp_forward() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Setup UDP Forward over GRE${NC}"
-  line
-  ensure_root || return
-  echo "This configures: Public UDP port -> GRE peer UDP service"
-  read -r -p "Public UDP port on this server [51821]: " public_port; public_port="${public_port:-51821}"
-  read -r -p "GRE destination IP [102.230.9.2]: " dst_ip; dst_ip="${dst_ip:-102.230.9.2}"
-  read -r -p "Destination UDP port [$public_port]: " dst_port; dst_port="${dst_port:-$public_port}"
-  echo
-  echo "DNAT udp dpt:$public_port -> $dst_ip:$dst_port"
-  echo "MASQUERADE to $dst_ip:$dst_port"
-  echo "FORWARD ACCEPT both directions"
-  read -r -p "Apply? [y/N]: " ok
-  case "$ok" in y|Y|yes|YES) ;; *) echo "Cancelled."; pause; return ;; esac
-  sysctl_forwarding_on
-  iptables -t nat -D PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port" 2>/dev/null || true
-  iptables -t nat -D POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE 2>/dev/null || true
-  iptables -D FORWARD -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -D FORWARD -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -t nat -A PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port"
-  iptables -t nat -A POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE
-  iptables -I FORWARD 1 -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT
-  iptables -I FORWARD 2 -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT
-  if have_cmd ufw; then ufw allow "$public_port/udp" || true; fi
-  save_firewall
-  cat > "$STATE_DIR/udp-forward-$public_port.env" <<STATE
-public_port=$public_port
-dst_ip=$dst_ip
-dst_port=$dst_port
-created_at=$(date -Is)
-STATE
-  echo -e "${GREEN}UDP forward configured and firewall rules saved.${NC}"
-  echo "Tests:"
-  echo "  tcpdump -ni any udp port $public_port"
-  echo "  tcpdump -ni greIR udp port $dst_port"
-  echo "  On peer: tcpdump -ni any udp port $dst_port"
-  pause
-}
-
-remove_udp_forward() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Remove UDP Forward${NC}"
-  line
-  ensure_root || return
-  read -r -p "Public UDP port to remove [51821]: " public_port; public_port="${public_port:-51821}"
-  read -r -p "GRE destination IP [102.230.9.2]: " dst_ip; dst_ip="${dst_ip:-102.230.9.2}"
-  read -r -p "Destination UDP port [$public_port]: " dst_port; dst_port="${dst_port:-$public_port}"
-  iptables -t nat -D PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port" 2>/dev/null || true
-  iptables -t nat -D POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE 2>/dev/null || true
-  iptables -D FORWARD -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -D FORWARD -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT 2>/dev/null || true
-  rm -f "$STATE_DIR/udp-forward-$public_port.env" 2>/dev/null || true
-  save_firewall
-  echo -e "${GREEN}Removed matching rules if existed.${NC}"
-  pause
-}
-
-wireguard_over_gre_preset() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Preset: WireGuard over GRE${NC}"
-  line
-  echo "Use this on IRAN server after GRE is created."
-  echo "Default: User -> Iran UDP 51821 -> GRE peer 102.230.9.2:51821"
-  echo "Note: GRE ping can fail while UDP/WireGuard still works."
-  echo
-  read -r -p "Apply WireGuard UDP forward preset now? [y/N]: " ok
-  case "$ok" in y|Y|yes|YES) ;; *) echo "Cancelled."; pause; return ;; esac
-  public_port=51821 dst_ip=102.230.9.2 dst_port=51821
-  sysctl_forwarding_on
-  iptables -t nat -D PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port" 2>/dev/null || true
-  iptables -t nat -D POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE 2>/dev/null || true
-  iptables -D FORWARD -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -D FORWARD -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -t nat -A PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port"
-  iptables -t nat -A POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE
-  iptables -I FORWARD 1 -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT
-  iptables -I FORWARD 2 -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT
-  if have_cmd ufw; then ufw allow 51821/udp || true; fi
-  save_firewall
-  echo -e "${GREEN}WireGuard over GRE preset applied and saved.${NC}"
-  echo "Recommended client MTU behind GRE: 1360, fallback: 1280"
-  pause
-}
-
-hysteria_over_gre_preset() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Preset: Hysteria over GRE${NC}"
-  line
-  echo "Use this on IRAN server after Hysteria works directly on KHAREJ."
-  read -r -p "Public UDP port [8080]: " p; p="${p:-8080}"
-  read -r -p "GRE destination IP [102.230.9.2]: " dst; dst="${dst:-102.230.9.2}"
-  read -r -p "Destination UDP port [$p]: " dp; dp="${dp:-$p}"
-  echo
-  public_port="$p" dst_ip="$dst" dst_port="$dp"
-  read -r -p "Apply Hysteria UDP forward now? [y/N]: " ok
-  case "$ok" in y|Y|yes|YES) ;; *) echo "Cancelled."; pause; return ;; esac
-  sysctl_forwarding_on
-  iptables -t nat -D PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port" 2>/dev/null || true
-  iptables -t nat -D POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE 2>/dev/null || true
-  iptables -D FORWARD -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -D FORWARD -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT 2>/dev/null || true
-  iptables -t nat -A PREROUTING -p udp --dport "$public_port" -j DNAT --to-destination "$dst_ip:$dst_port"
-  iptables -t nat -A POSTROUTING -p udp -d "$dst_ip" --dport "$dst_port" -j MASQUERADE
-  iptables -I FORWARD 1 -p udp -d "$dst_ip" --dport "$dst_port" -j ACCEPT
-  iptables -I FORWARD 2 -p udp -s "$dst_ip" --sport "$dst_port" -j ACCEPT
-  if have_cmd ufw; then ufw allow "$public_port/udp" || true; fi
-  save_firewall
-  echo -e "${GREEN}Hysteria over GRE preset applied and saved.${NC}"
-  pause
-}
-
-quality_server() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Quality Test Server${NC}"
-  line
-  ensure_root || return
-  safe_install_tools
-  echo "Run this on the server that should receive tests."
-  echo "For KHAREJ side usually bind to: 102.230.9.2"
-  echo "For IRAN side usually bind to: 102.230.9.1"
-  echo
-  read -r -p "Bind tunnel IP [102.230.9.2]: " bind_ip; bind_ip="${bind_ip:-102.230.9.2}"
-  read -r -p "iperf3 port [5201]: " port; port="${port:-5201}"
-  echo
-  echo -e "${GREEN}Starting iperf3 server:${NC} iperf3 -s -B $bind_ip -p $port"
-  echo "Keep this window open. Press Ctrl+C to stop."
-  echo
-  iperf3 -s -B "$bind_ip" -p "$port" || true
-  pause
-}
-
-quality_client_full() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Full GRE Quality Test Client${NC}"
-  line
-  ensure_root || return
-  safe_install_tools
-  echo "Before running this, start option 1 on the peer server."
-  echo
-  read -r -p "Local tunnel IP to bind [102.230.9.1]: " local_ip; local_ip="${local_ip:-102.230.9.1}"
-  read -r -p "Peer tunnel IP / iperf3 server [102.230.9.2]: " peer_ip; peer_ip="${peer_ip:-102.230.9.2}"
-  read -r -p "iperf3 port [5201]: " port; port="${port:-5201}"
-  read -r -p "Test duration seconds [20]: " duration; duration="${duration:-20}"
-  read -r -p "UDP bitrates to test, comma separated [5M,10M,20M,50M]: " rates; rates="${rates:-5M,10M,20M,50M}"
-
-  local report
-  report="$LOG_DIR/gre-quality-$(date +%F-%H%M%S).log"
-
-  {
-    echo "VIPTrue GRE Quality Report"
-    echo "Created: $(date -Is)"
-    echo "Local bind: $local_ip"
-    echo "Peer: $peer_ip:$port"
-    echo "Duration: $duration"
-    echo
-    echo "===== System / tunnel status ====="
-    ip addr | grep -A4 -E 'gre|102\.230\.9' || true
-    ip route | grep -E '102\.230\.9|gre' || true
-    echo
-    echo "===== iperf3 TCP upload: local -> peer ====="
-    iperf3 -c "$peer_ip" -B "$local_ip" -p "$port" -t "$duration" || true
-    echo
-    echo "===== iperf3 TCP reverse: peer -> local ====="
-    iperf3 -c "$peer_ip" -B "$local_ip" -p "$port" -t "$duration" -R || true
-    echo
-    echo "===== iperf3 UDP tests: loss / jitter ====="
-    IFS=',' read -ra rr <<< "$rates"
-    for rate in "${rr[@]}"; do
-      rate="${rate// /}"
-      [[ -n "$rate" ]] || continue
-      echo
-      echo "----- UDP bitrate $rate local -> peer -----"
-      iperf3 -c "$peer_ip" -B "$local_ip" -p "$port" -u -b "$rate" -t "$duration" || true
-      echo
-      echo "----- UDP bitrate $rate peer -> local reverse -----"
-      iperf3 -c "$peer_ip" -B "$local_ip" -p "$port" -u -b "$rate" -t "$duration" -R || true
-    done
-    echo
-    echo "===== WireGuard status if available ====="
-    if have_cmd wg; then wg show || true; else echo "wg command not installed."; fi
-    echo
-    echo "===== NAT / FORWARD counters ====="
-    iptables -t nat -L PREROUTING -n -v --line-numbers | sed -n '1,120p' || true
-    iptables -t nat -L POSTROUTING -n -v --line-numbers | sed -n '1,120p' || true
-    iptables -L FORWARD -n -v --line-numbers | sed -n '1,120p' || true
-    echo
-    echo "===== Interpretation guide ====="
-    echo "UDP Lost/Total above 2% = bad for VPN/gaming."
-    echo "High jitter = unstable tunnel."
-    echo "TCP Retr high = congestion or packet loss."
-    echo "If ping fails but UDP works, GRE may still be usable for WireGuard/Hysteria."
-  } 2>&1 | tee "$report"
 
   echo
-  echo -e "${GREEN}Report saved:${NC} $report"
-  echo "Send this report output/file for analysis."
-  pause
-}
+  echo -e "${YELLOW}Core commands${NC}"
+  check_command ip iproute2
+  check_command ss iproute2
+  check_command curl curl
+  check_command ping iputils-ping
+  check_command getent libc-bin
+  check_command openssl openssl
 
-quality_public_path() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Public Path MTR Test${NC}"
-  line
-  safe_install_tools
-  read -r -p "Remote public IP: " remote_ip
-  [[ -n "${remote_ip// /}" ]] || { echo "Empty."; pause; return; }
-  local report
-  report="$LOG_DIR/public-path-mtr-$(date +%F-%H%M%S).log"
-  {
-    echo "VIPTrue Public Path Report"
-    echo "Created: $(date -Is)"
-    echo "Remote public IP: $remote_ip"
-    echo
-    echo "===== ping public IP ====="
-    ping -c 20 -W 2 "$remote_ip" || true
-    echo
-    echo "===== mtr TCP/ICMP path ====="
-    if have_cmd mtr; then
-      mtr -rwzc 50 "$remote_ip" || true
+  echo
+  echo -e "${YELLOW}Tunnel-specific commands${NC}"
+  check_command wg wireguard-tools
+  check_command wg-quick wireguard-tools
+  check_command iperf3 iperf3
+  check_command tracepath iputils-tracepath
+  check_command traceroute traceroute
+  check_command ufw ufw
+  check_command nc netcat-openbsd
+
+  echo
+  echo -e "${YELLOW}Network basics${NC}"
+  if have_cmd ip; then
+    route="$(ip route show default 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$route" ]]; then
+      pass_line "default route" "$route"
     else
-      echo "mtr not available."
+      fail_line "default route" "none found"
     fi
-  } 2>&1 | tee "$report"
-  echo
-  echo -e "${GREEN}Report saved:${NC} $report"
+  else
+    fail_line "default route" "ip command missing"
+  fi
+
+  public_hint="curl -4fsS --max-time 5 https://api.ipify.org"
+  if have_cmd curl; then
+    pass_line "public IP lookup command" "$public_hint"
+  elif have_cmd wget; then
+    pass_line "public IP lookup command" "wget can be used as fallback"
+  else
+    warn_line "public IP lookup command" "install curl or wget"
+  fi
+
+  dns_ok="no"
+  if have_cmd getent && getent hosts example.com >/dev/null 2>&1; then
+    dns_ok="yes"
+  elif have_cmd dig && dig +short example.com >/dev/null 2>&1; then
+    dns_ok="yes"
+  fi
+
+  if [[ "$dns_ok" == "yes" ]]; then
+    pass_line "DNS resolution" "example.com resolves"
+  else
+    warn_line "DNS resolution" "could not confirm DNS with getent/dig"
+  fi
+
+  if have_cmd ping; then
+    pass_line "ping availability" "latency tests can run"
+  else
+    warn_line "ping availability" "install iputils-ping"
+  fi
+
+  if have_cmd curl; then
+    pass_line "curl availability" "HTTP diagnostics can run"
+  else
+    warn_line "curl availability" "install curl"
+  fi
+
+  if have_cmd ip; then
+    pass_line "iproute2 availability" "ip command exists"
+  else
+    fail_line "iproute2 availability" "install iproute2 before GRE/WireGuard work"
+  fi
+
+  set_summary \
+    "OS, privileges, command availability, default route, DNS, ping, curl, and iproute2." \
+    "Missing commands or route/DNS failures are the most likely blockers." \
+    "Install only the missing packages suggested above, then rerun Preflight Checks." \
+    "Only package installation or network configuration fixes; no tunnel changes were made."
+  print_summary
   pause
 }
 
-quality_mtu_helper() {
+list_listeners() {
+  local proto="$1"
+  local port="$2"
+  local output=""
+
+  if have_cmd ss; then
+    if [[ "$proto" == "tcp" ]]; then
+      output="$(ss -H -ltnp 2>/dev/null | grep -E "[:.]${port}([[:space:]]|$)" || true)"
+    else
+      output="$(ss -H -lunp 2>/dev/null | grep -E "[:.]${port}([[:space:]]|$)" || true)"
+    fi
+  elif have_cmd netstat; then
+    if [[ "$proto" == "tcp" ]]; then
+      output="$(netstat -ltnp 2>/dev/null | grep -E "[:.]${port}([[:space:]]|$)" || true)"
+    else
+      output="$(netstat -lunp 2>/dev/null | grep -E "[:.]${port}([[:space:]]|$)" || true)"
+    fi
+  fi
+
+  printf '%s\n' "$output"
+}
+
+check_local_listener() {
+  local proto="$1"
+  local port="$2"
+  local output
+
+  output="$(list_listeners "$proto" "$port")"
+  if [[ -n "$output" ]]; then
+    pass_line "local ${proto^^} listener on $port" "found"
+    printf '%s\n' "$output"
+  else
+    warn_line "local ${proto^^} listener on $port" "not found"
+  fi
+}
+
+ufw_port_status() {
+  local port="$1"
+  local proto="$2"
+  local status
+
+  if ! have_cmd ufw; then
+    warn_line "UFW" "not installed"
+    return
+  fi
+
+  status="$(ufw status 2>/dev/null || true)"
+  if [[ -z "$status" ]]; then
+    warn_line "UFW" "status unavailable; try with sudo/root"
+    return
+  fi
+
+  if printf '%s\n' "$status" | grep -qi "inactive"; then
+    warn_line "UFW" "installed but inactive"
+    return
+  fi
+
+  if [[ "$proto" == "both" ]]; then
+    if printf '%s\n' "$status" | grep -Eiq "(^|[[:space:]])${port}(/(tcp|udp))?([[:space:]]|$)"; then
+      pass_line "UFW rule for $port" "matching rule appears in ufw status"
+    else
+      warn_line "UFW rule for $port" "active UFW, but no obvious allow rule found"
+    fi
+  elif printf '%s\n' "$status" | grep -Eiq "(^|[[:space:]])${port}(/${proto})?([[:space:]]|$)"; then
+    pass_line "UFW rule for $port/$proto" "matching rule appears in ufw status"
+  else
+    warn_line "UFW rule for $port/$proto" "active UFW, but no obvious allow rule found"
+  fi
+}
+
+port_checks() {
+  local proto port proto_lower
+
   title
-  echo -e "${CYAN}Tunnel Manager > MTU Helper${NC}"
+  echo -e "${CYAN}Tunnel Manager > Port Checks${NC}"
   line
-  echo "This uses ICMP DF ping. If ICMP is blocked, results may be invalid."
-  read -r -p "Peer tunnel IP [102.230.9.2]: " peer; peer="${peer:-102.230.9.2}"
-  for size in 1436 1400 1360 1320 1280 1200; do
+  echo
+
+  read -r -p "Protocol [tcp/udp/both]: " proto
+  proto_lower="${proto:-both}"
+  proto_lower="${proto_lower,,}"
+
+  case "$proto_lower" in
+    tcp|udp|both) ;;
+    *)
+      fail_line "protocol" "choose tcp, udp, or both"
+      set_summary "Port protocol input." "Invalid protocol." "Rerun Port Checks with tcp, udp, or both." "No server-side change needed."
+      print_summary
+      pause
+      return
+      ;;
+  esac
+
+  read -r -p "Port number: " port
+  if ! valid_port "$port"; then
+    fail_line "port number" "must be 1-65535"
+    set_summary "Port number input." "Invalid port." "Rerun Port Checks with a valid port number." "No server-side change needed."
+    print_summary
+    pause
+    return
+  fi
+
+  if [[ "$proto_lower" == "tcp" || "$proto_lower" == "both" ]]; then
+    check_local_listener tcp "$port"
+  fi
+
+  if [[ "$proto_lower" == "udp" || "$proto_lower" == "both" ]]; then
+    check_local_listener udp "$port"
+  fi
+
+  echo
+  ufw_port_status "$port" "$proto_lower"
+  echo
+  warn_line "remote reachability" "must be tested from another server or client outside this host"
+  info_line "safe firewall note" "this check did not change UFW, iptables, nftables, or services"
+
+  set_summary \
+    "Local listener and UFW visibility for $proto_lower port $port." \
+    "If no listener is shown, the service may not be running; if UFW lacks a rule, traffic may be blocked." \
+    "Start the service or add a reviewed firewall allow rule, then test remotely from another server." \
+    "Possibly yes: service start, firewall allow, or provider security-group change may be required."
+  print_summary
+  pause
+}
+
+num_ge() {
+  local left="$1"
+  local right="$2"
+
+  have_cmd awk || return 1
+  awk -v left="$left" -v right="$right" 'BEGIN { exit !(left >= right) }'
+}
+
+recommend_connection() {
+  local loss="$1"
+  local avg="$2"
+
+  if [[ -z "$loss" ]]; then
+    printf 'blocked / needs different tunnel'
+    return
+  fi
+
+  if num_ge "$loss" 50; then
+    printf 'blocked / needs different tunnel'
+  elif num_ge "$loss" 10; then
+    printf 'unstable'
+  elif num_ge "$loss" 3; then
+    printf 'acceptable'
+  elif [[ -n "$avg" ]] && num_ge "$avg" 250; then
+    printf 'unstable'
+  elif [[ -n "$avg" ]] && num_ge "$avg" 150; then
+    printf 'acceptable'
+  else
+    printf 'good'
+  fi
+}
+
+iperf3_helper_preview() {
+  local bind_ip peer_ip port duration bitrate
+
+  bind_ip="$(prompt_default "Local bind IP or interface IP" "0.0.0.0")"
+  peer_ip="$(prompt_default "Peer/server IP for client command" "PEER_TUNNEL_IP")"
+  port="$(prompt_default "iperf3 port" "5201")"
+  duration="$(prompt_default "Test duration seconds" "20")"
+  bitrate="$(prompt_default "UDP bitrate preview" "10M")"
+
+  if ! valid_port "$port"; then
+    warn_line "iperf3 port" "invalid input; showing default 5201 instead"
+    port="5201"
+  fi
+
+  echo
+  echo -e "${YELLOW}iperf3 preview commands${NC}"
+  cat <<EOF_IPERF
+Server side:
+  iperf3 -s -B $bind_ip -p $port
+
+Client TCP:
+  iperf3 -c $peer_ip -p $port -t $duration
+
+Client TCP reverse:
+  iperf3 -c $peer_ip -p $port -t $duration -R
+
+Client UDP:
+  iperf3 -c $peer_ip -p $port -u -b $bitrate -t $duration
+EOF_IPERF
+  echo
+  info_line "iperf3 helper" "preview only; start server/client only on hosts you control"
+}
+
+quality_tests() {
+  local target count ping_out loss avg recommendation trace_choice
+
+  title
+  echo -e "${CYAN}Tunnel Manager > Quality Tests${NC}"
+  line
+  echo
+
+  read -r -p "Target IP/host for latency test: " target
+  if [[ -z "${target// /}" ]]; then
+    fail_line "target" "empty"
+    set_summary "Quality test target input." "No target was provided." "Rerun Quality Tests with a tunnel peer or public test host." "No server-side change needed."
+    print_summary
+    pause
+    return
+  fi
+
+  count="$(prompt_default "Ping count" "10")"
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || ((count < 1 || count > 100)); then
+    warn_line "ping count" "invalid input; using 10"
+    count="10"
+  fi
+
+  loss=""
+  avg=""
+  if have_cmd ping; then
     echo
-    echo "Testing payload size $size:"
-    ping -M do -s "$size" -c 3 -W 2 "$peer" || true
-  done
-  echo
-  echo "For WireGuard behind GRE, try client MTU 1360 first; fallback 1280."
-  pause
-}
+    echo -e "${YELLOW}Latency and packet loss${NC}"
+    ping_out="$(ping -c "$count" -W 2 "$target" 2>&1 || true)"
+    printf '%s\n' "$ping_out"
+    loss="$(printf '%s\n' "$ping_out" | sed -nE 's/.* ([0-9.]+)% packet loss.*/\1/p' | tail -n 1)"
+    avg="$(printf '%s\n' "$ping_out" | sed -nE 's#.*= [0-9.]+/([0-9.]+)/.*#\1#p' | tail -n 1)"
+  else
+    fail_line "ping" "missing; install iputils-ping"
+  fi
 
-show_quality_reports() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Saved Quality Reports${NC}"
-  line
-  ls -lh "$LOG_DIR"/*.log 2>/dev/null || echo "No reports yet."
   echo
-  read -r -p "Show latest report now? [y/N]: " ans
-  case "$ans" in
+  read -r -p "Run route trace if traceroute/tracepath exists? [Y/n]: " trace_choice
+  trace_choice="${trace_choice:-Y}"
+  case "$trace_choice" in
     y|Y|yes|YES)
-      latest="$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -1 || true)"
-      if [[ -n "$latest" ]]; then
+      if have_cmd tracepath; then
         echo
-        echo "===== $latest ====="
-        sed -n '1,260p' "$latest"
+        echo -e "${YELLOW}Route trace via tracepath${NC}"
+        tracepath -m 12 "$target" || true
+      elif have_cmd traceroute; then
+        echo
+        echo -e "${YELLOW}Route trace via traceroute${NC}"
+        traceroute "$target" || true
+      else
+        warn_line "route trace" "install tracepath or traceroute"
       fi
       ;;
   esac
-  pause
-}
 
-reverse_ssh_menu() {
-  title
-  echo -e "${CYAN}Tunnel Manager > Reverse SSH pg-node helper${NC}"
-  line
-  echo "This helper is TCP-only and useful for PasarGuard pg-node behind restricted networks."
-  echo "Recommended final panel settings from our tested scenario:"
-  echo "  Node Address: 127.0.0.1"
-  echo "  Node Port:    remote localhost port, e.g. 2053"
-  echo "  API Port:     remote localhost API port, e.g. 2095"
   echo
-  echo "For full setup, use earlier pg-node reverse SSH guide or request next Step."
+  read -r -p "Show iperf3 server/client preview commands? [Y/n]: " trace_choice
+  trace_choice="${trace_choice:-Y}"
+  case "$trace_choice" in
+    y|Y|yes|YES) iperf3_helper_preview ;;
+  esac
+
+  recommendation="$(recommend_connection "$loss" "$avg")"
+  echo
+  echo -e "${GREEN}Final recommendation:${NC} $recommendation"
+
+  set_summary \
+    "Ping latency/loss, optional route trace, and optional iperf3 preview for $target." \
+    "Packet loss, high latency, missing trace tools, or blocked ICMP can make the tunnel unreliable." \
+    "Use the recommendation above; if unstable or blocked, test another transport such as WireGuard, Hysteria2, or TLS/SNI." \
+    "Maybe: peer-side iperf3, firewall, provider routing, or tunnel protocol changes may be needed."
+  print_summary
   pause
 }
 
-live_tcpdump() {
+gre_helper() {
+  local local_pub remote_pub local_tun remote_tun ifname mtu confirm
+
   title
-  echo -e "${CYAN}Tunnel Manager > Live tcpdump${NC}"
+  echo -e "${CYAN}Tunnel Manager > GRE Helper${NC}"
   line
-  ensure_root || return
-  read -r -p "Interface [any]: " iface; iface="${iface:-any}"
-  read -r -p "Filter [udp port 51821]: " filter; filter="${filter:-udp port 51821}"
-  echo "Running: tcpdump -ni $iface $filter"
-  echo "Press Ctrl+C to stop."
-  tcpdump -ni "$iface" $filter || true
+  echo
+  warn_line "GRE filtering" "many providers/networks block protocol 47 even when TCP/UDP works"
+  echo
+
+  local_pub="$(prompt_default "Local public IPv4" "LOCAL_PUBLIC_IP")"
+  remote_pub="$(prompt_default "Remote public IPv4" "REMOTE_PUBLIC_IP")"
+  local_tun="$(prompt_default "Local tunnel CIDR" "10.99.0.1/30")"
+  remote_tun="$(prompt_default "Remote tunnel CIDR" "10.99.0.2/30")"
+  ifname="$(prompt_default "Interface name" "gre-viptrue")"
+  mtu="$(prompt_default "MTU" "1476")"
+
+  if [[ "$local_pub" != "LOCAL_PUBLIC_IP" ]] && ! valid_ipv4 "$local_pub"; then
+    fail_line "local public IPv4" "invalid"
+    pause
+    return
+  fi
+
+  if [[ "$remote_pub" != "REMOTE_PUBLIC_IP" ]] && ! valid_ipv4 "$remote_pub"; then
+    fail_line "remote public IPv4" "invalid"
+    pause
+    return
+  fi
+
+  if [[ "$local_tun" != "10.99.0.1/30" ]] && ! valid_cidr "$local_tun"; then
+    fail_line "local tunnel CIDR" "use IPv4/CIDR like 10.99.0.1/30"
+    pause
+    return
+  fi
+
+  if [[ "$remote_tun" != "10.99.0.2/30" ]] && ! valid_cidr "$remote_tun"; then
+    fail_line "remote tunnel CIDR" "use IPv4/CIDR like 10.99.0.2/30"
+    pause
+    return
+  fi
+
+  if ! valid_iface "$ifname"; then
+    fail_line "interface name" "use 1-15 characters: letters, numbers, dot, underscore, colon, dash"
+    pause
+    return
+  fi
+
+  if ! [[ "$mtu" =~ ^[0-9]+$ ]] || ((mtu < 576 || mtu > 9000)); then
+    fail_line "MTU" "use a number between 576 and 9000"
+    pause
+    return
+  fi
+
+  echo
+  echo -e "${YELLOW}Preview: run on this server${NC}"
+  cat <<EOF_GRE_LOCAL
+modprobe ip_gre
+ip tunnel del $ifname 2>/dev/null || true
+ip tunnel add $ifname mode gre remote $remote_pub local $local_pub ttl 255
+ip link set $ifname mtu $mtu
+ip addr add $local_tun dev $ifname
+ip link set $ifname up
+ip addr show $ifname
+EOF_GRE_LOCAL
+
+  echo
+  echo -e "${YELLOW}Preview: run on the peer server${NC}"
+  cat <<EOF_GRE_REMOTE
+modprobe ip_gre
+ip tunnel del $ifname 2>/dev/null || true
+ip tunnel add $ifname mode gre remote $local_pub local $remote_pub ttl 255
+ip link set $ifname mtu $mtu
+ip addr add $remote_tun dev $ifname
+ip link set $ifname up
+ip addr show $ifname
+EOF_GRE_REMOTE
+
+  echo
+  echo -e "${YELLOW}Persistence note${NC}"
+  echo "Create a reviewed systemd oneshot service after runtime testing passes."
+  echo "Do not enable persistence until both sides work and SSH access is safe."
+  echo "Suggested service actions after review:"
+  echo "  systemctl daemon-reload"
+  echo "  systemctl enable --now viptrue-gre-$ifname.service"
+
+  echo
+  read -r -p "Type APPLY to run the runtime GRE commands on this server only: " confirm
+  if [[ "$confirm" == "APPLY" ]]; then
+    ensure_root || { pause; return; }
+    require_cmd ip iproute2 || { pause; return; }
+    if have_cmd modprobe; then
+      modprobe ip_gre 2>/dev/null || true
+    fi
+    ip tunnel del "$ifname" 2>/dev/null || true
+    ip tunnel add "$ifname" mode gre remote "$remote_pub" local "$local_pub" ttl 255
+    ip link set "$ifname" mtu "$mtu"
+    ip addr add "$local_tun" dev "$ifname"
+    ip link set "$ifname" up
+    pass_line "runtime GRE applied" "$ifname"
+    ip addr show "$ifname" || true
+  else
+    info_line "runtime GRE" "not applied"
+  fi
+
+  set_summary \
+    "GRE command preview for both sides, MTU guidance, optional runtime apply prompt." \
+    "GRE may be blocked by the provider/network, or one side may have wrong public/tunnel IP values." \
+    "Apply only after reviewing both sides; then test ping and UDP traffic across the tunnel." \
+    "Yes: both servers need matching GRE configuration; provider filtering may require a different tunnel."
+  print_summary
   pause
 }
 
-gre_menu() {
-  while true; do
-    title
-    echo -e "${CYAN}Tunnel Manager > GRE Site-to-Site${NC}"
+wireguard_helper() {
+  local local_addr peer_addr listen_port endpoint peer_port
+
+  title
+  echo -e "${CYAN}Tunnel Manager > WireGuard Helper${NC}"
+  line
+  echo
+
+  if have_cmd wg; then
+    pass_line "wg command" "$(command -v wg)"
     echo
-    echo "1. Create / repair GRE on this server"
-    echo "2. GRE status and ping test"
-    echo "3. Remove GRE interface + persistent service"
-    echo "0. Back"
-    line
-    read -r -p "Enter your choice [0-3]: " c
-    case "$c" in
-      1) create_gre ;;
-      2) gre_status ;;
-      3) remove_gre ;;
-      0) break ;;
-      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
-    esac
-  done
+    echo -e "${YELLOW}WireGuard status${NC}"
+    wg show || true
+  else
+    warn_line "wg command" "suggest: $(install_hint wireguard-tools)"
+  fi
+
+  if have_cmd wg-quick; then
+    pass_line "wg-quick command" "$(command -v wg-quick)"
+  else
+    warn_line "wg-quick command" "suggest: $(install_hint wireguard-tools)"
+  fi
+
+  if [[ -d /sys/module/wireguard ]] || grep -q '^wireguard ' /proc/modules 2>/dev/null; then
+    pass_line "kernel support" "wireguard module is loaded"
+  elif have_cmd modinfo && modinfo wireguard >/dev/null 2>&1; then
+    pass_line "kernel support" "wireguard module is available"
+  elif have_cmd modprobe && modprobe -n wireguard >/dev/null 2>&1; then
+    pass_line "kernel support" "modprobe dry-run can find wireguard"
+  else
+    warn_line "kernel support" "wireguard module not confirmed"
+  fi
+
+  echo
+  echo -e "${YELLOW}Point-to-point preview${NC}"
+  local_addr="$(prompt_default "This server tunnel address" "10.88.0.1/30")"
+  peer_addr="$(prompt_default "Peer tunnel address" "10.88.0.2/30")"
+  listen_port="$(prompt_default "This server UDP listen port" "51820")"
+  endpoint="$(prompt_default "Peer endpoint host/IP" "PEER_PUBLIC_IP")"
+  peer_port="$(prompt_default "Peer endpoint UDP port" "$listen_port")"
+
+  if ! valid_port "$listen_port" || ! valid_port "$peer_port"; then
+    fail_line "WireGuard port" "ports must be 1-65535"
+    pause
+    return
+  fi
+
+  cat <<EOF_WG
+This server /etc/wireguard/wg0.conf preview:
+  [Interface]
+  Address = $local_addr
+  ListenPort = $listen_port
+  PrivateKey = <LOCAL_PRIVATE_KEY_ON_THIS_SERVER>
+
+  [Peer]
+  PublicKey = <PEER_PUBLIC_KEY>
+  AllowedIPs = ${peer_addr%/*}/32
+  Endpoint = $endpoint:$peer_port
+  PersistentKeepalive = 25
+
+Peer server preview swaps the addresses and keys:
+  Address = $peer_addr
+  AllowedIPs = ${local_addr%/*}/32
+  Endpoint = THIS_SERVER_PUBLIC_IP:$listen_port
+
+Safety:
+  No private keys were generated, stored, or printed by this helper.
+  Review firewall and provider UDP rules before starting wg-quick.
+EOF_WG
+
+  set_summary \
+    "WireGuard command/kernel diagnostics and point-to-point config preview." \
+    "Missing wireguard-tools/kernel support or blocked UDP are common blockers." \
+    "Install wireguard-tools if missing, create keys only on the server, then test with non-production peers." \
+    "Yes: both servers need keys, peer configs, UDP firewall/provider rules, and wg-quick service decisions."
+  print_summary
+  pause
 }
 
-udp_menu() {
-  while true; do
-    title
-    echo -e "${CYAN}Tunnel Manager > UDP Forward over GRE${NC}"
-    echo
-    echo "1. Setup UDP forward manually"
-    echo "2. Preset: WireGuard 51821 over GRE"
-    echo "3. Preset: Hysteria UDP over GRE"
-    echo "4. Status: NAT / FORWARD counters"
-    echo "5. Remove UDP forward"
-    echo "6. Live tcpdump"
-    echo "0. Back"
-    line
-    read -r -p "Enter your choice [0-6]: " c
-    case "$c" in
-      1) setup_udp_forward ;;
-      2) wireguard_over_gre_preset ;;
-      3) hysteria_over_gre_preset ;;
-      4) udp_forward_status ;;
-      5) remove_udp_forward ;;
-      6) live_tcpdump ;;
-      0) break ;;
-      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
-    esac
-  done
+hysteria2_helper() {
+  local port listener
+
+  title
+  echo -e "${CYAN}Tunnel Manager > Hysteria2 Helper${NC}"
+  line
+  echo
+  echo "Rule: do not use UDP port 443 for Hysteria2 in this toolbox."
+  echo "Suggested non-443 UDP ports: 8080, 8443, 2087, or another reviewed port."
+  echo
+
+  port="$(prompt_default "UDP port to evaluate" "8080")"
+  if ! valid_port "$port"; then
+    fail_line "Hysteria2 port" "ports must be 1-65535"
+    pause
+    return
+  fi
+
+  if [[ "$port" == "443" ]]; then
+    fail_line "Hysteria2 port 443" "forbidden by user rule; choose 8080, 8443, 2087, or another non-443 UDP port"
+    set_summary \
+      "Hysteria2 port policy." \
+      "Port 443 was selected, which is forbidden for Hysteria2 in this toolbox." \
+      "Rerun with a non-443 UDP port such as 8080 or 8443." \
+      "Yes: update planned Hysteria2/firewall/provider rules to a non-443 UDP port."
+    print_summary
+    pause
+    return
+  fi
+
+  if have_cmd hysteria; then
+    pass_line "hysteria command" "$(command -v hysteria)"
+    hysteria version 2>/dev/null || true
+  else
+    warn_line "hysteria command" "not installed; diagnostic only in this batch"
+  fi
+
+  listener="$(list_listeners udp "$port")"
+  if [[ -n "$listener" ]]; then
+    pass_line "UDP listener on $port" "found"
+    printf '%s\n' "$listener"
+  else
+    warn_line "UDP listener on $port" "not found"
+  fi
+
+  ufw_port_status "$port" udp
+  echo
+  echo -e "${YELLOW}Diagnostic commands to run after reviewing config${NC}"
+  cat <<EOF_HY2
+Check service:
+  systemctl status hysteria-server.service --no-pager -l
+
+Check UDP listener:
+  ss -lunp | grep ':$port'
+
+Watch packets:
+  tcpdump -ni any udp port $port
+EOF_HY2
+
+  set_summary \
+    "Hysteria2 command presence, non-443 port policy, local UDP listener, and UFW visibility." \
+    "Missing hysteria binary, no UDP listener, blocked firewall, or accidental 443 usage can block Hysteria2." \
+    "Use a non-443 UDP port, then configure and test Hysteria2 only on servers you control." \
+    "Yes: Hysteria2 service, UDP firewall/provider rules, and peer/client config must match."
+  print_summary
+  pause
 }
 
-quality_menu() {
-  while true; do
-    title
-    echo -e "${CYAN}Tunnel Manager > Quality / Speed Tests${NC}"
-    line
-    echo
-    echo "1. Start iperf3 server on this tunnel IP"
-    echo "2. Run full quality client test: TCP/Reverse/UDP loss+jitter"
-    echo "3. Public path ping + MTR test"
-    echo "4. MTU helper"
-    echo "5. Show saved reports"
-    echo "0. Back"
-    echo
-    read -r -p "Enter your choice [0-5]: " c
-    case "$c" in
-      1) quality_server ;;
-      2) quality_client_full ;;
-      3) quality_public_path ;;
-      4) quality_mtu_helper ;;
-      5) show_quality_reports ;;
-      0) break ;;
-      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
-    esac
-  done
+reverse_tls_sni_notes() {
+  local local_port placeholder_domain
+
+  title
+  echo -e "${CYAN}Tunnel Manager > Reverse TLS / SNI Notes${NC}"
+  line
+  echo
+
+  placeholder_domain="YOUR_DOMAIN.example"
+  local_port="$(prompt_default "Local TLS listener port to check" "8443")"
+  if ! valid_port "$local_port"; then
+    fail_line "local listener port" "ports must be 1-65535"
+    pause
+    return
+  fi
+
+  echo -e "${YELLOW}Checklist${NC}"
+  echo "[ ] DNS points to the Iran server or target server as intended."
+  echo "[ ] CDN/proxy status is suitable for tunnel use, not accidentally intercepting unsupported traffic."
+  echo "[ ] Local TCP listener exists on the expected port."
+  echo "[ ] TLS handshake can be tested with openssl from a remote host."
+  echo "[ ] SNI uses a reviewed placeholder during planning; do not paste real domains into logs."
+  echo
+
+  check_local_listener tcp "$local_port"
+
+  echo
+  if have_cmd openssl; then
+    pass_line "openssl" "$(command -v openssl)"
+  else
+    warn_line "openssl" "suggest: $(install_hint openssl)"
+  fi
+
+  echo
+  echo -e "${YELLOW}Placeholder commands${NC}"
+  cat <<EOF_TLS
+DNS review:
+  dig +short $placeholder_domain
+
+TLS handshake from a remote test host:
+  openssl s_client -connect $placeholder_domain:$local_port -servername $placeholder_domain -brief
+
+Local listener:
+  ss -ltnp | grep ':$local_port'
+EOF_TLS
+
+  set_summary \
+    "Reverse TLS/SNI checklist, local TCP listener, and openssl availability." \
+    "DNS/CDN mismatch, no local listener, or TLS handshake failure are likely blockers." \
+    "Verify DNS/CDN settings and test TLS from a remote host using placeholders first." \
+    "Maybe: DNS, CDN/proxy mode, TLS certificate, or listener service may need server-side changes."
+  print_summary
+  pause
+}
+
+diagnostics_summary_screen() {
+  title
+  echo -e "${CYAN}Tunnel Manager > Diagnostics Summary${NC}"
+  print_summary
+  pause
+}
+
+exit_toolbox() {
+  clear
+  echo "Bye."
+  exit 0
 }
 
 while true; do
@@ -700,26 +853,30 @@ while true; do
   echo -e "${CYAN}Tunnel Manager${NC}"
   line
   echo
-  echo "1. Testing / Compatibility Scan"
-  echo "2. GRE Site-to-Site"
-  echo "3. UDP Forward over GRE: WireGuard / Hysteria"
-  echo "4. Quality / Speed Tests"
-  echo "5. Reverse SSH helper: PasarGuard pg-node"
-  echo "6. Live tcpdump"
-  echo "7. WireGuard over Hysteria2 obfs/salamander"
+  echo "1. Preflight checks"
+  echo "2. Quality tests"
+  echo "3. Port checks"
+  echo "4. GRE helper"
+  echo "5. WireGuard helper"
+  echo "6. Hysteria2 helper"
+  echo "7. Reverse TLS / SNI notes"
+  echo "8. Diagnostics summary"
   echo "0. Back"
+  echo "99. Exit"
   echo
-  read -r -p "Enter your choice [0-7]: " choice
+  read -r -p "Enter your choice [0-8,99]: " choice
+
   case "$choice" in
-    1) compatibility_scan ;;
-    2) gre_menu ;;
-    3) udp_menu ;;
-    4) quality_menu ;;
-    5) reverse_ssh_menu ;;
-    6) live_tcpdump ;;
-    7) bash "$BASE_DIR/modules/utility/tunnel-wg-hy2-obfs.sh" ;;
+    1) preflight_checks ;;
+    2) quality_tests ;;
+    3) port_checks ;;
+    4) gre_helper ;;
+    5) wireguard_helper ;;
+    6) hysteria2_helper ;;
+    7) reverse_tls_sni_notes ;;
+    8) diagnostics_summary_screen ;;
     0) break ;;
-    99) viptrue_main_menu ;;
+    99) exit_toolbox ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
   esac
 done
