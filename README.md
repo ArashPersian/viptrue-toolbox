@@ -47,6 +47,15 @@ profile tests. If the wrong WireGuard internal port was entered, edit the
 profile and change the remote WireGuard UDP port. If old tunnels conflict, use
 Delete profile first so files are moved to the archive instead of removed.
 
+Existing legacy Hysteria2 servers under `/etc/hysteria` are detected in the
+same management menu as `legacy-foreign`. Use `Import legacy /etc/hysteria
+profile` to copy the legacy config, cert, and key into
+`/etc/viptrue-hy2-wg-forward/legacy/<profile>/` and create a managed
+`viptrue-hy2-wg-legacy-<profile>.service`. The import keeps the old files and
+old service in place unless you explicitly disable the old service after the
+managed service is active. Use `Check legacy conflicts` to find duplicate UDP
+ports or old/new service overlap.
+
 ## Safety
 
 Do not commit real secrets, private keys, production endpoints, or server logs
