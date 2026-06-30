@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.7 - Unreleased
+
+- Added Legacy Proven Foreign Mode for `/etc/hysteria` with self-signed TLS,
+  `sniGuard: disable`, salamander OBFS, and Bing masquerade defaults.
+- Added Iran server preset defaults for the legacy proven foreign style:
+  UDP `2087`, SNI `bing.com`, insecure TLS, and WireGuard forwarding.
+- Updated raw legacy detection to show `/etc/hysteria/config.yaml` as
+  `legacy-proven-foreign` and allow service restart/test from the manager.
+- Preserved `masquerade.proxy.rewriteHost: true` in generated foreign configs.
+
 ## 0.3.6 - Unreleased
 
 - Added detection for legacy Hysteria2 configs under `/etc/hysteria`.

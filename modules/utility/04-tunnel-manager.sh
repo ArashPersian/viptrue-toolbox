@@ -23,6 +23,8 @@ HY2_LEGACY_KEY="$HY2_LEGACY_DIR/server.key"
 HY2_SYSTEMD_SYSTEM_DIR="${VIPTRUE_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 HY2_SYSTEMD_SEARCH_DIRS="${VIPTRUE_SYSTEMD_SEARCH_DIRS:-$HY2_SYSTEMD_SYSTEM_DIR /lib/systemd/system /usr/lib/systemd/system}"
 HY2_DEFAULT_MASQUERADE_URL="https://www.bing.com/"
+HY2_DEFAULT_LEGACY_SNI="bing.com"
+HY2_LEGACY_SERVICE_NAME="${VIPTRUE_HYSTERIA_LEGACY_SERVICE:-hysteria-server.service}"
 HY2_PROMPTED_PORT=""
 HY2_WRITTEN_CONFIG=""
 
@@ -806,6 +808,13 @@ yaml_quote() {
   printf "'%s'" "$escaped"
 }
 
+yaml_double_quote() {
+  local escaped
+  escaped="${1//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  printf '"%s"' "$escaped"
+}
+
 prompt_secret_required() {
   local prompt="$1"
   local value
@@ -1018,6 +1027,7 @@ hy2_wg_write_foreign_config() {
       echo "  type: proxy"
       echo "  proxy:"
       echo "    url: $masquerade_q"
+      echo "    rewriteHost: true"
     fi
     echo
     echo "disableUDP: false"
@@ -1026,6 +1036,71 @@ hy2_wg_write_foreign_config() {
   chmod 600 "$config_path"
 
   HY2_WRITTEN_CONFIG="$config_path"
+}
+
+hy2_wg_write_legacy_proven_config() {
+  local listen_port="$1"
+  local auth_pass="$2"
+  local obfs_pass="$3"
+  local cert_path="$4"
+  local key_path="$5"
+  local masquerade_url="$6"
+  local auth_q obfs_q
+
+  auth_q="$(yaml_double_quote "$auth_pass")"
+  obfs_q="$(yaml_double_quote "$obfs_pass")"
+  backup_existing_file "$HY2_LEGACY_CONFIG"
+  {
+    echo "listen: :$listen_port"
+    echo
+    echo "tls:"
+    echo "  cert: $cert_path"
+    echo "  key: $key_path"
+    echo "  sniGuard: disable"
+    echo
+    echo "auth:"
+    echo "  type: password"
+    echo "  password: $auth_q"
+    echo
+    echo "obfs:"
+    echo "  type: salamander"
+    echo "  salamander:"
+    echo "    password: $obfs_q"
+    echo
+    echo "masquerade:"
+    echo "  type: proxy"
+    echo "  proxy:"
+    echo "    url: $masquerade_url"
+    echo "    rewriteHost: true"
+    echo
+    echo "disableUDP: false"
+    echo "udpIdleTimeout: 60s"
+  } > "$HY2_LEGACY_CONFIG"
+  chmod 600 "$HY2_LEGACY_CONFIG"
+
+  HY2_WRITTEN_CONFIG="$HY2_LEGACY_CONFIG"
+}
+
+hy2_wg_generate_self_signed_cert() {
+  local cert_path="$1"
+  local key_path="$2"
+  local cert_cn="$3"
+  local cert_subject
+
+  require_cmd openssl openssl || return 1
+  backup_existing_file "$cert_path"
+  backup_existing_file "$key_path"
+  cert_subject="/CN=$cert_cn"
+  if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || -n "${MSYSTEM:-}" ]]; then
+    cert_subject="//CN=$cert_cn"
+  fi
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$key_path" \
+    -out "$cert_path" \
+    -days 3650 \
+    -subj "$cert_subject" >/dev/null 2>&1
+  chmod 600 "$key_path"
+  chmod 644 "$cert_path"
 }
 
 hy2_wg_write_service() {
@@ -1113,6 +1188,39 @@ hy2_wg_foreign_post_tests() {
   else
     warn_line "wg command" "suggest: $(install_hint wireguard-tools)"
   fi
+}
+
+hy2_wg_legacy_proven_post_tests() {
+  local service_name="$1"
+  local listen_port="$2"
+  local wg_iface="$3"
+  local wg_port="$4"
+  local cert_cn="$5"
+
+  echo
+  line
+  echo -e "${CYAN}Legacy Proven Foreign Mode Post-Setup Tests${NC}"
+
+  if have_cmd systemctl && systemctl is-active --quiet "$service_name"; then
+    pass_line "Hysteria service active" "$service_name"
+  else
+    fail_line "Hysteria service active" "$service_name not active or systemctl unavailable"
+  fi
+
+  check_local_listener udp "$listen_port"
+  pass_line "config path" "$HY2_LEGACY_CONFIG"
+  pass_line "cert path" "$HY2_LEGACY_CERT"
+  pass_line "key path" "$HY2_LEGACY_KEY"
+
+  if have_cmd ip && ip link show "$wg_iface" >/dev/null 2>&1; then
+    pass_line "WireGuard interface exists" "$wg_iface"
+  else
+    fail_line "WireGuard interface exists" "$wg_iface not found"
+  fi
+
+  check_local_listener udp "$wg_port"
+  echo
+  echo "Now configure Iran client profile with SNI $cert_cn, insecure TLS yes, and set PasarGuard endpoint to IRAN_IP:IRAN_PORT."
 }
 
 hy2_wg_setup_foreign_server() {
@@ -1207,16 +1315,7 @@ hy2_wg_setup_foreign_server() {
   ensure_hy2_wg_dirs
 
   if [[ "$tls_mode" == "self-signed" ]]; then
-    require_cmd openssl openssl || { pause; return; }
-    backup_existing_file "$cert_path"
-    backup_existing_file "$key_path"
-    openssl req -x509 -newkey rsa:2048 -nodes \
-      -keyout "$key_path" \
-      -out "$cert_path" \
-      -days 3650 \
-      -subj "/CN=$cert_cn" >/dev/null 2>&1
-    chmod 600 "$key_path"
-    chmod 644 "$cert_path"
+    hy2_wg_generate_self_signed_cert "$cert_path" "$key_path" "$cert_cn" || { pause; return; }
   fi
 
   service_name="$(hy2_wg_service_name "foreign")"
@@ -1239,6 +1338,124 @@ hy2_wg_setup_foreign_server() {
     "Failures usually mean Hysteria2 is not active, UDP is blocked, or WireGuard is not listening locally." \
     "Fix the failed layer, then connect one PasarGuard test peer through the Iran endpoint." \
     "Yes: foreign server service/firewall/WireGuard may need action."
+  print_summary
+  pause
+}
+
+hy2_wg_setup_legacy_proven_foreign_server() {
+  local listen_port auth_pass obfs_pass cert_cn masquerade_url wg_iface wg_port
+  local confirm keep_cert start_now service_name config_path meta_path
+
+  title
+  echo -e "${CYAN}Hysteria2 OBFS -> WireGuard Forward > Legacy Proven Foreign Mode${NC}"
+  line
+  echo
+
+  hy2_prompt_non443_port "Hysteria UDP listen port" "2087" || {
+    set_summary \
+      "Legacy proven Hysteria2 listen port." \
+      "UDP port 443 or an invalid port was refused." \
+      "Rerun Legacy Proven Foreign Mode with a non-443 UDP port such as 2087." \
+      "No server-side change was made."
+    print_summary
+    pause
+    return
+  }
+  listen_port="$HY2_PROMPTED_PORT"
+
+  auth_pass="$(prompt_secret_required "Auth password")"
+  obfs_pass="$(prompt_secret_required "OBFS salamander password")"
+  cert_cn="$(prompt_default "Certificate CN/SNI" "$HY2_DEFAULT_LEGACY_SNI")"
+  cert_cn="${cert_cn:-$HY2_DEFAULT_LEGACY_SNI}"
+  cert_cn="${cert_cn//\//-}"
+  masquerade_url="$(prompt_default "Masquerade proxy URL" "$HY2_DEFAULT_MASQUERADE_URL")"
+  masquerade_url="${masquerade_url:-$HY2_DEFAULT_MASQUERADE_URL}"
+
+  wg_iface="$(prompt_default "WireGuard interface name" "wg0")"
+  if ! valid_iface "$wg_iface"; then
+    fail_line "WireGuard interface name" "invalid interface name"
+    pause
+    return
+  fi
+
+  wg_port="$(prompt_default "WireGuard local UDP port" "51820")"
+  if ! valid_port "$wg_port"; then
+    fail_line "WireGuard local UDP port" "ports must be 1-65535"
+    pause
+    return
+  fi
+
+  service_name="$HY2_LEGACY_SERVICE_NAME"
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  echo "Legacy directory: $HY2_LEGACY_DIR"
+  echo "Config path: $HY2_LEGACY_CONFIG"
+  echo "Cert/key: $HY2_LEGACY_CERT / $HY2_LEGACY_KEY"
+  echo "Hysteria UDP listen: $listen_port"
+  echo "Certificate CN/SNI: $cert_cn"
+  echo "Masquerade proxy URL: $masquerade_url"
+  echo "sniGuard: disable"
+  echo "OBFS: salamander"
+  echo "Service: $service_name"
+  echo "WireGuard target on this foreign server: 127.0.0.1:$wg_port ($wg_iface)"
+  echo "Existing files will be backed up before overwrite or regeneration."
+  echo "Firewall command preview: ufw allow $listen_port/udp"
+  echo
+  read -r -p "Create legacy proven Hysteria2 config and service now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info_line "legacy proven setup" "cancelled before writing files"
+      set_summary \
+        "Legacy proven foreign server setup plan." \
+        "Setup was cancelled before writing files." \
+        "Rerun Legacy Proven Foreign Mode when ready to create /etc/hysteria config/service." \
+        "No server-side change was made."
+      print_summary
+      pause
+      return
+      ;;
+  esac
+
+  ensure_root || { pause; return; }
+  ensure_hysteria2_ready || { pause; return; }
+  mkdir -p "$HY2_LEGACY_DIR" "$HY2_SYSTEMD_SYSTEM_DIR"
+  chmod 700 "$HY2_LEGACY_DIR" 2>/dev/null || true
+
+  if [[ -f "$HY2_LEGACY_CERT" && -f "$HY2_LEGACY_KEY" ]]; then
+    read -r -p "Existing cert/key found. Keep existing cert/key? [Y/n]: " keep_cert
+    keep_cert="${keep_cert:-Y}"
+    case "$keep_cert" in
+      y|Y|yes|YES) pass_line "cert/key" "kept existing files" ;;
+      *) hy2_wg_generate_self_signed_cert "$HY2_LEGACY_CERT" "$HY2_LEGACY_KEY" "$cert_cn" || { pause; return; } ;;
+    esac
+  else
+    hy2_wg_generate_self_signed_cert "$HY2_LEGACY_CERT" "$HY2_LEGACY_KEY" "$cert_cn" || { pause; return; }
+  fi
+
+  hy2_wg_write_legacy_proven_config "$listen_port" "$auth_pass" "$obfs_pass" "$HY2_LEGACY_CERT" "$HY2_LEGACY_KEY" "$masquerade_url"
+  config_path="$HY2_WRITTEN_CONFIG"
+  hy2_wg_write_service "$service_name" "server" "$config_path" "VIPTrue Hysteria2 legacy proven foreign server"
+  meta_path="$HY2_LEGACY_DIR/viptrue.meta"
+  {
+    echo "profile=legacy-proven-foreign"
+    echo "cert_cn=$cert_cn"
+    echo "masquerade_url=$masquerade_url"
+    echo "wg_iface=$wg_iface"
+    echo "wg_port=$wg_port"
+  } > "$meta_path"
+  chmod 600 "$meta_path" 2>/dev/null || true
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  hy2_wg_apply_ufw_rules "$listen_port"
+  hy2_wg_legacy_proven_post_tests "$service_name" "$listen_port" "$wg_iface" "$wg_port" "$cert_cn"
+
+  set_summary \
+    "Legacy proven /etc/hysteria config, self-signed TLS, systemd service, firewall note, and post-setup tests." \
+    "Failures usually mean Hysteria2 is not active, UDP is blocked, WireGuard is missing, or the listener/port does not match." \
+    "Configure Iran client profile with the shown SNI, insecure TLS yes, matching auth/OBFS, and WireGuard forwarding." \
+    "Yes: foreign server service/firewall/WireGuard and Iran client endpoint configuration are needed."
   print_summary
   pause
 }
@@ -1347,6 +1564,8 @@ hy2_wg_iran_post_profile_tests() {
 hy2_wg_setup_iran_server() {
   local count i profile foreign_host foreign_port iran_port remote_wg_host remote_wg_port
   local auth_pass obfs_pass tls_sni insecure_tls confirm start_now iran_public
+  local preset_choice legacy_preset foreign_port_default tls_sni_default insecure_tls_default
+  local remote_wg_host_default remote_wg_port_default
   local -a profiles=()
   local -a foreign_hosts=()
   local -a foreign_ports=()
@@ -1380,6 +1599,24 @@ hy2_wg_setup_iran_server() {
       return
     fi
 
+    echo "Foreign setup preset:"
+    echo "1. Standard Hysteria2 OBFS WireGuard foreign mode"
+    echo "2. Use Legacy Proven Foreign Mode"
+    read -r -p "Select preset [1-2]: " preset_choice
+    legacy_preset="false"
+    foreign_port_default="8080"
+    tls_sni_default=""
+    insecure_tls_default="Y"
+    remote_wg_host_default="127.0.0.1"
+    remote_wg_port_default="51820"
+    if [[ "$preset_choice" == "2" ]]; then
+      legacy_preset="true"
+      foreign_port_default="2087"
+      tls_sni_default="$HY2_DEFAULT_LEGACY_SNI"
+      insecure_tls_default="Y"
+      info_line "legacy proven preset" "foreign port 2087, SNI $HY2_DEFAULT_LEGACY_SNI, insecure TLS true, masquerade $HY2_DEFAULT_MASQUERADE_URL"
+    fi
+
     read -r -p "Foreign IP/domain: " foreign_host
     if [[ -z "${foreign_host// /}" ]]; then
       fail_line "foreign IP/domain" "value is required"
@@ -1387,7 +1624,7 @@ hy2_wg_setup_iran_server() {
       return
     fi
 
-    hy2_prompt_non443_port "Foreign Hysteria UDP port" "8080" || {
+    hy2_prompt_non443_port "Foreign Hysteria UDP port" "$foreign_port_default" || {
       set_summary \
         "Iran profile foreign Hysteria2 port." \
         "UDP port 443 or an invalid port was refused." \
@@ -1435,8 +1672,8 @@ hy2_wg_setup_iran_server() {
       return
     fi
 
-    remote_wg_host="$(prompt_default "Remote WireGuard host from foreign server view" "127.0.0.1")"
-    remote_wg_port="$(prompt_default "Remote WireGuard UDP port" "51820")"
+    remote_wg_host="$(prompt_default "Remote WireGuard host from foreign server view" "$remote_wg_host_default")"
+    remote_wg_port="$(prompt_default "Remote WireGuard UDP port" "$remote_wg_port_default")"
     if ! valid_port "$remote_wg_port"; then
       fail_line "Remote WireGuard UDP port" "ports must be 1-65535"
       pause
@@ -1445,8 +1682,13 @@ hy2_wg_setup_iran_server() {
 
     auth_pass="$(prompt_secret_required "Auth password for $profile")"
     obfs_pass="$(prompt_secret_required "OBFS salamander password for $profile")"
-    read -r -p "TLS SNI if needed, empty=none: " tls_sni
-    insecure_tls="$(prompt_yes_no_value "Use insecure TLS for this private tunnel?" "Y")"
+    if [[ "$legacy_preset" == "true" ]]; then
+      tls_sni="$(prompt_default "TLS SNI" "$tls_sni_default")"
+      echo "Masquerade proxy URL on foreign side: $HY2_DEFAULT_MASQUERADE_URL"
+    else
+      read -r -p "TLS SNI if needed, empty=none: " tls_sni
+    fi
+    insecure_tls="$(prompt_yes_no_value "Use insecure TLS for this private tunnel?" "$insecure_tls_default")"
 
     profiles+=("$profile")
     foreign_hosts+=("$foreign_host")
@@ -1839,12 +2081,12 @@ hy2_wg_is_client_profile() {
 }
 
 hy2_wg_is_raw_legacy_profile() {
-  [[ "$1" == "legacy-foreign" ]]
+  [[ "$1" == "legacy-proven-foreign" ]]
 }
 
 hy2_wg_is_foreign_profile() {
   case "$1" in
-    foreign|legacy-managed|legacy-foreign) return 0 ;;
+    foreign|legacy-managed|legacy-proven-foreign) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1870,6 +2112,11 @@ hy2_wg_managed_legacy_profile_name() {
 hy2_wg_foreign_meta_path_for_config() {
   local config="$1"
   local profile_dir
+
+  if [[ "$config" == "$HY2_LEGACY_CONFIG" ]]; then
+    printf '%s/viptrue.meta\n' "$HY2_LEGACY_DIR"
+    return
+  fi
 
   if [[ "$config" == "$HY2_WG_DIR/foreign-server.yaml" ]]; then
     printf '%s/foreign.meta\n' "$HY2_WG_DIR"
@@ -1938,6 +2185,7 @@ hy2_wg_detect_services_for_config() {
   local config="$1"
   local service service_file dir
   local known_services=(
+    "$HY2_LEGACY_SERVICE_NAME"
     "hysteria.service"
     "hysteria-server.service"
     "hysteria2.service"
@@ -2113,7 +2361,7 @@ hy2_wg_collect_profiles() {
     listen="$(hy2_wg_extract_listen_port "$HY2_LEGACY_CONFIG")"
     masquerade_url="$(hy2_wg_masquerade_url "$HY2_LEGACY_CONFIG")"
     target="legacy /etc/hysteria; masquerade: $masquerade_url"
-    hy2_wg_add_profile "legacy-foreign" "legacy-foreign" "$HY2_LEGACY_CONFIG" "${legacy_primary:-none}" "${listen:-unknown}" "$target"
+    hy2_wg_add_profile "legacy-proven-foreign" "legacy-proven-foreign" "$HY2_LEGACY_CONFIG" "${legacy_primary:-none}" "${listen:-unknown}" "$target"
   fi
 }
 
@@ -2225,7 +2473,7 @@ hy2_wg_show_selected_profile_details() {
       legacy_services="$(hy2_wg_detect_services_for_config "$HY2_SELECTED_CONFIG")"
       legacy_services_text="$(printf '%s\n' "$legacy_services" | hy2_wg_join_lines)"
       echo "Related legacy services: ${legacy_services_text:-none detected}"
-      echo "Managed action hint: import this profile before editing, deleting, or restarting it from the toolbox."
+      echo "Managed action hint: import this profile before editing or deleting it from the toolbox."
     else
       meta_path="$(hy2_wg_foreign_meta_path_for_config "$HY2_SELECTED_CONFIG")"
       wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
@@ -2606,8 +2854,8 @@ hy2_wg_manage_restart_profile() {
   line
   hy2_wg_select_profile || { pause; return; }
   echo
-  if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
-    fail_line "restart legacy profile" "import the /etc/hysteria profile before restarting it from this manager"
+  if [[ "$HY2_SELECTED_SERVICE" == "none" ]]; then
+    fail_line "restart profile" "no related service was detected for this profile"
     pause
     return
   fi
@@ -2643,7 +2891,7 @@ hy2_wg_manage_test_profile() {
     wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$meta_path" 2>/dev/null | head -n 1)"
     hy2_wg_foreign_post_tests "$HY2_SELECTED_SERVICE" "$HY2_SELECTED_LISTEN" "${wg_iface:-wg0}" "${wg_port:-51820}"
     if hy2_wg_is_raw_legacy_profile "$HY2_SELECTED_MODE"; then
-      warn_line "legacy management" "import this profile before editing, deleting, or restarting it from the toolbox"
+      warn_line "legacy management" "import this profile before editing or deleting it from the toolbox"
     fi
     echo
     echo "Optional next step: Hysteria2 OBFS -> WireGuard Forward -> Wait for WireGuard Handshake"
@@ -2690,7 +2938,7 @@ hy2_wg_manage_import_legacy_profile() {
   listen_port="$(hy2_wg_extract_listen_port "$HY2_LEGACY_CONFIG")"
   hy2_wg_validate_edit_port "Legacy Hysteria UDP listen port" "$listen_port" "true" || { pause; return; }
 
-  profile="$(prompt_default "Managed legacy profile name" "legacy-foreign")"
+  profile="$(prompt_default "Managed legacy profile name" "legacy-proven-foreign")"
   if ! valid_profile_name "$profile"; then
     fail_line "profile name" "use 1-32 letters, numbers, dot, underscore, or dash"
     pause
@@ -2945,18 +3193,20 @@ hy2_wg_forward_menu() {
     line
     echo
     echo "1. Foreign server mode"
-    echo "2. Iran server mode"
-    echo "3. Wait for WireGuard Handshake"
-    echo "4. Manage Existing Hysteria2 WireGuard Forwards"
+    echo "2. Legacy Proven Foreign Mode (/etc/hysteria + Bing masquerade)"
+    echo "3. Iran server mode"
+    echo "4. Wait for WireGuard Handshake"
+    echo "5. Manage Existing Hysteria2 WireGuard Forwards"
     echo "0. Back"
     echo
-    read -r -p "Enter your choice [0-4]: " choice
+    read -r -p "Enter your choice [0-5]: " choice
 
     case "$choice" in
       1) hy2_wg_setup_foreign_server ;;
-      2) hy2_wg_setup_iran_server ;;
-      3) hy2_wg_wait_for_wireguard_handshake ;;
-      4) hy2_wg_manage_existing_menu ;;
+      2) hy2_wg_setup_legacy_proven_foreign_server ;;
+      3) hy2_wg_setup_iran_server ;;
+      4) hy2_wg_wait_for_wireguard_handshake ;;
+      5) hy2_wg_manage_existing_menu ;;
       0) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac

@@ -35,6 +35,19 @@ Use Foreign server mode on each foreign WireGuard host, then Iran server mode to
 create one local UDP endpoint per foreign profile. Set each PasarGuard
 WireGuard node/profile endpoint to the printed `IRAN_IP:IRAN_PORT` value.
 
+For the proven legacy foreign-server layout, use:
+
+```text
+Tunnel Manager -> Hysteria2 OBFS -> WireGuard Forward -> Legacy Proven Foreign Mode (/etc/hysteria + Bing masquerade)
+```
+
+This writes `/etc/hysteria/config.yaml`, generates or preserves
+`/etc/hysteria/server.crt` and `/etc/hysteria/server.key`, defaults SNI/CN to
+`bing.com`, keeps `sniGuard: disable`, uses salamander OBFS, and sets the
+masquerade proxy to `https://www.bing.com/`. In Iran server mode, choose
+`Use Legacy Proven Foreign Mode` to default the client profile to port `2087`,
+SNI `bing.com`, insecure TLS, and WireGuard forwarding to `127.0.0.1:51820`.
+
 To review or fix an already-generated forward, use:
 
 ```text
@@ -48,8 +61,8 @@ profile and change the remote WireGuard UDP port. If old tunnels conflict, use
 Delete profile first so files are moved to the archive instead of removed.
 
 Existing legacy Hysteria2 servers under `/etc/hysteria` are detected in the
-same management menu as `legacy-foreign`. Use `Import legacy /etc/hysteria
-profile` to copy the legacy config, cert, and key into
+same management menu as `legacy-proven-foreign`. Use `Import legacy
+/etc/hysteria profile` to copy the legacy config, cert, and key into
 `/etc/viptrue-hy2-wg-forward/legacy/<profile>/` and create a managed
 `viptrue-hy2-wg-legacy-<profile>.service`. The import keeps the old files and
 old service in place unless you explicitly disable the old service after the
