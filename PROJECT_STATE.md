@@ -3,7 +3,7 @@
 Version: 0.3.5
 Branch: fasttrack/hysteria-wg-profile-management
 Base commit: 807056d Merge pull request #4 from ArashPersian/fasttrack/hysteria-obfs-wireguard-multi
-Commit: pending
+Commit: 6b34193 Add Hysteria2 WireGuard profile management
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
