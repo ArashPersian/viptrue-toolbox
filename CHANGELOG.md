@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.1 - Unreleased
+
+- Added Auto Tunnel Expert as the top Tunnel Manager product path with scanner,
+  selected-build, multi-foreign add, registry, and family explanation actions.
+- Added a shell-native Tunnel Engine Registry with UDP/QUIC, TCP/web-like,
+  reverse, CDN/operator-specific, DNS emergency, raw IP/kernel, and
+  spoof/desync helper families.
+- Added adaptive scanner prompts and ranked output using standardized
+  dependency, port, listener, status, suitability, speed, and detection-risk
+  metadata.
+- Added v2 generic Hysteria2 OBFS UDP build flow that does not ask for
+  WireGuard or Xray details and preserves the proven non-443 UDP, salamander
+  OBFS, `sniGuard: disable`, self-signed TLS, and Bing masquerade profile.
+- Improved managed profile listing with protocol, entry port, foreign host,
+  destination, service, config path, status, and endpoint suggestion fields.
+- Added `docs/TUNNEL_ENGINE_REGISTRY.md` and
+  `docs/TUNNEL_SCANNER_ARCHITECTURE.md`.
+
 ## 0.4.0 - Unreleased
 
 - Added Auto Tunnel Wizard with a safe two-step pairing-code workflow for
