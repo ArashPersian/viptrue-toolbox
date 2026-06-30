@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.9 - Unreleased
+
+- Added interactive dependency install prompts in the Synthetic WireGuard
+  Handshake Test when `wg` or `ip` is missing.
+- Installs `wireguard-tools` with `iproute2` for missing `wg`, and installs
+  `iproute2` for missing `ip`, using apt after explicit confirmation.
+- Added Iran synthetic client guidance that the test target IP should normally
+  remain `10.255.255.1`, with an extra warning for public IPv4 targets.
+
 ## 0.3.8 - Unreleased
 
 - Added a Synthetic WireGuard Handshake Test submenu for Hysteria2 OBFS

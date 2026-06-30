@@ -1946,6 +1946,116 @@ hy2_wg_validate_timeout() {
   fi
 }
 
+hy2_wg_install_apt_packages() {
+  local packages=("$@")
+
+  if ! have_cmd apt-get; then
+    fail_line "package installer" "apt-get not found; install ${packages[*]} manually"
+    return 1
+  fi
+
+  ensure_root || return 1
+  apt-get update && apt-get install -y "${packages[@]}"
+}
+
+hy2_wg_synthetic_require_wg() {
+  local install
+
+  if have_cmd wg; then
+    return 0
+  fi
+
+  read -r -p "wireguard-tools is required. Install it now? [y/N] " install
+  case "$install" in
+    y|Y|yes|YES)
+      hy2_wg_install_apt_packages wireguard-tools iproute2 || return 1
+      ;;
+    *)
+      fail_line "wireguard-tools" "required for Synthetic WireGuard Handshake Test"
+      return 1
+      ;;
+  esac
+
+  if have_cmd wg; then
+    pass_line "wg command" "$(command -v wg)"
+    return 0
+  fi
+
+  fail_line "wg command" "wireguard-tools install finished but wg is still unavailable"
+  return 1
+}
+
+hy2_wg_synthetic_require_ip() {
+  local install
+
+  if have_cmd ip; then
+    return 0
+  fi
+
+  read -r -p "iproute2 is required. Install it now? [y/N] " install
+  case "$install" in
+    y|Y|yes|YES)
+      hy2_wg_install_apt_packages iproute2 || return 1
+      ;;
+    *)
+      fail_line "iproute2" "required for temporary WireGuard interface management"
+      return 1
+      ;;
+  esac
+
+  if have_cmd ip; then
+    pass_line "ip command" "$(command -v ip)"
+    return 0
+  fi
+
+  fail_line "ip command" "iproute2 install finished but ip is still unavailable"
+  return 1
+}
+
+hy2_wg_ipv4_octets_valid() {
+  local ip="$1"
+  local o1 o2 o3 o4
+  local octet value
+
+  IFS=. read -r o1 o2 o3 o4 <<< "$ip"
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    [[ "$octet" =~ ^[0-9]+$ ]] || return 1
+    value=$((10#$octet))
+    ((value >= 0 && value <= 255)) || return 1
+  done
+}
+
+hy2_wg_ipv4_is_public() {
+  local ip="$1"
+  local o1 o2 o3 o4
+  local n1 n2 n3 n4
+
+  hy2_wg_ipv4_octets_valid "$ip" || return 1
+  IFS=. read -r o1 o2 o3 o4 <<< "$ip"
+  n1=$((10#$o1))
+  n2=$((10#$o2))
+  n3=$((10#$o3))
+  n4=$((10#$o4))
+
+  ((n1 == 0)) && return 1
+  ((n1 == 10)) && return 1
+  ((n1 == 100 && n2 >= 64 && n2 <= 127)) && return 1
+  ((n1 == 127)) && return 1
+  ((n1 == 169 && n2 == 254)) && return 1
+  ((n1 == 172 && n2 >= 16 && n2 <= 31)) && return 1
+  ((n1 == 192 && n2 == 168)) && return 1
+  ((n1 == 192 && n2 == 0 && n3 == 0)) && return 1
+  ((n1 == 192 && n2 == 0 && n3 == 2)) && return 1
+  ((n1 == 192 && n2 == 88 && n3 == 99)) && return 1
+  ((n1 == 198 && (n2 == 18 || n2 == 19))) && return 1
+  ((n1 == 198 && n2 == 51 && n3 == 100)) && return 1
+  ((n1 == 203 && n2 == 0 && n3 == 113)) && return 1
+  ((n1 == 255 && n2 == 255 && n3 == 255 && n4 == 255)) && return 1
+  ((n1 >= 224)) && return 1
+
+  return 0
+}
+
 hy2_wg_peer_exists() {
   local iface="$1"
   local peer="$2"
@@ -2011,8 +2121,8 @@ hy2_wg_synthetic_prepare_foreign_peer() {
     return
   fi
 
+  hy2_wg_synthetic_require_wg || { pause; return; }
   ensure_root || { pause; return; }
-  require_cmd wg wireguard-tools || { pause; return; }
 
   if ! wg show "$wg_iface" >/dev/null 2>&1; then
     fail_line "WireGuard interface $wg_iface" "wg show failed"
@@ -2124,6 +2234,7 @@ hy2_wg_synthetic_run_iran_client() {
 
   read -r -p "Foreign WireGuard public key: " foreign_public_key
   client_addr="$(prompt_default "Temporary test client address" "10.255.255.2/32")"
+  warn_line "Test target IP" "normally keep the default 10.255.255.1 for the synthetic WG test"
   target_ip="$(prompt_default "Test target IP" "10.255.255.1")"
   ifname="$(prompt_default "Temporary interface name" "wg-viptest")"
   timeout="$(prompt_default "Timeout seconds" "30")"
@@ -2140,10 +2251,14 @@ hy2_wg_synthetic_run_iran_client() {
     return
   fi
 
-  if ! valid_ipv4 "$target_ip"; then
+  if ! valid_ipv4 "$target_ip" || ! hy2_wg_ipv4_octets_valid "$target_ip"; then
     fail_line "Test target IP" "use an IPv4 address like 10.255.255.1"
     pause
     return
+  fi
+
+  if hy2_wg_ipv4_is_public "$target_ip"; then
+    warn_line "Test target IP" "This is usually not needed for synthetic WG test. Use default 10.255.255.1 unless you know why."
   fi
 
   if ! valid_iface "$ifname"; then
@@ -2153,9 +2268,9 @@ hy2_wg_synthetic_run_iran_client() {
   fi
 
   hy2_wg_validate_timeout "timeout" "$timeout" 300 || { pause; return; }
+  hy2_wg_synthetic_require_wg || { pause; return; }
+  hy2_wg_synthetic_require_ip || { pause; return; }
   ensure_root || { pause; return; }
-  require_cmd wg wireguard-tools || { pause; return; }
-  require_cmd ip iproute2 || { pause; return; }
 
   mkdir -p "$HY2_WG_SYNTHETIC_TMP_DIR"
   chmod 700 "$HY2_WG_SYNTHETIC_TMP_DIR" 2>/dev/null || true
@@ -2329,7 +2444,7 @@ hy2_wg_synthetic_verify_foreign_handshake() {
   fi
 
   hy2_wg_validate_timeout "timeout" "$timeout" 900 || { pause; return; }
-  require_cmd wg wireguard-tools || { pause; return; }
+  hy2_wg_synthetic_require_wg || { pause; return; }
 
   if ! wg show "$wg_iface" >/dev/null 2>&1; then
     fail_line "WireGuard interface $wg_iface" "wg show failed"
@@ -2465,8 +2580,8 @@ hy2_wg_synthetic_cleanup_foreign_peer() {
     return
   fi
 
+  hy2_wg_synthetic_require_wg || { pause; return; }
   ensure_root || { pause; return; }
-  require_cmd wg wireguard-tools || { pause; return; }
 
   if wg set "$wg_iface" peer "$peer_pub" remove; then
     pass_line "foreign temporary peer removed" "$peer_pub"
@@ -2506,6 +2621,7 @@ hy2_wg_synthetic_cleanup_iran_prompt() {
     return
   fi
 
+  hy2_wg_synthetic_require_ip || { pause; return; }
   ensure_root || { pause; return; }
   hy2_wg_synthetic_cleanup_iran_runtime "$ifname" "$key_file"
 
