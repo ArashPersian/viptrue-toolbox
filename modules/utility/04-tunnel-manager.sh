@@ -10,9 +10,10 @@ LAST_ISSUE="Run a Tunnel Manager check first."
 LAST_ACTION="Start with Preflight Checks."
 LAST_SERVER_ACTION="Unknown."
 
-HY2_WG_DIR="/etc/viptrue-hy2-wg-forward"
+HY2_WG_DIR="${VIPTRUE_HY2_WG_DIR:-/etc/viptrue-hy2-wg-forward}"
 HY2_WG_CLIENT_DIR="$HY2_WG_DIR/clients"
 HY2_WG_CERT_DIR="$HY2_WG_DIR/certs"
+HY2_WG_ARCHIVE_DIR="$HY2_WG_DIR/archive"
 HY2_WG_SERVICE_PREFIX="viptrue-hy2-wg"
 HY2_PROMPTED_PORT=""
 HY2_WRITTEN_CONFIG=""
@@ -915,8 +916,8 @@ ensure_hysteria2_ready() {
 }
 
 ensure_hy2_wg_dirs() {
-  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR"
-  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" 2>/dev/null || true
+  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_ARCHIVE_DIR"
+  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" "$HY2_WG_ARCHIVE_DIR" 2>/dev/null || true
 }
 
 backup_existing_file() {
@@ -1205,6 +1206,11 @@ hy2_wg_setup_foreign_server() {
   hy2_wg_write_foreign_config "$listen_port" "$auth_pass" "$obfs_pass" "$tls_mode" "$cert_path" "$key_path"
   config_path="$HY2_WRITTEN_CONFIG"
   hy2_wg_write_service "$service_name" "server" "$config_path" "VIPTrue Hysteria2 OBFS WireGuard foreign server"
+  {
+    echo "wg_iface=$wg_iface"
+    echo "wg_port=$wg_port"
+  } > "$HY2_WG_DIR/foreign.meta"
+  chmod 600 "$HY2_WG_DIR/foreign.meta" 2>/dev/null || true
 
   start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
   hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
@@ -1663,6 +1669,729 @@ hy2_wg_wait_for_wireguard_handshake() {
   pause
 }
 
+hy2_wg_trim() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+hy2_wg_unquote() {
+  local value
+
+  value="$(hy2_wg_trim "$1")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}"; value="${value//\'\'/\'}" ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+hy2_wg_field_value() {
+  local config="$1"
+  local key="$2"
+  local raw
+
+  raw="$(sed -nE "s/^[[:space:]]*${key}:[[:space:]]*(.*)$/\1/p" "$config" 2>/dev/null | head -n 1)"
+  hy2_wg_unquote "$raw"
+}
+
+hy2_wg_extract_listen_port() {
+  local config="$1"
+
+  sed -nE 's/^[[:space:]]*(-[[:space:]]*)?listen:[[:space:]]*.*:([0-9]+)[[:space:]]*$/\2/p' "$config" 2>/dev/null | head -n 1
+}
+
+hy2_wg_extract_remote_target() {
+  local config="$1"
+
+  sed -nE 's/^[[:space:]]*remote:[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p' "$config" 2>/dev/null | head -n 1
+}
+
+hy2_wg_split_host_port() {
+  local value="$1"
+  local default_host="$2"
+  local default_port="$3"
+  local __host_var="$4"
+  local __port_var="$5"
+  local host port
+
+  value="$(hy2_wg_unquote "$value")"
+  if [[ "$value" == *:* ]]; then
+    host="${value%:*}"
+    port="${value##*:}"
+  else
+    host="${value:-$default_host}"
+    port="$default_port"
+  fi
+
+  printf -v "$__host_var" '%s' "$host"
+  printf -v "$__port_var" '%s' "$port"
+}
+
+hy2_wg_client_auth_secret() {
+  local config="$1"
+
+  sed -nE 's/^[[:space:]]*auth:[[:space:]]*(.*)$/\1/p' "$config" 2>/dev/null | head -n 1 | while IFS= read -r value; do
+    hy2_wg_unquote "$value"
+  done
+}
+
+hy2_wg_config_secret() {
+  local config="$1"
+  local section="$2"
+
+  awk -v section="$section" '
+    $0 ~ "^[[:space:]]*" section ":" {inside=1; next}
+    inside && /^[^[:space:]]/ {inside=0}
+    inside && /^[[:space:]]*password:/ {
+      sub(/^[[:space:]]*password:[[:space:]]*/, "")
+      print
+      exit
+    }
+  ' "$config" 2>/dev/null | while IFS= read -r value; do
+    hy2_wg_unquote "$value"
+  done
+}
+
+hy2_wg_mask_secret_value() {
+  local value="$1"
+  local length
+
+  if [[ -z "$value" ]]; then
+    printf '<hidden>\n'
+    return
+  fi
+
+  length="${#value}"
+  if ((length <= 8)); then
+    printf '<hidden>\n'
+  else
+    printf '%s...%s\n' "${value:0:4}" "${value:length-4:4}"
+  fi
+}
+
+hy2_wg_sanitize_config() {
+  local config="$1"
+
+  sed -E \
+    -e 's/^([[:space:]]*auth:[[:space:]]*).*/\1<hidden>/' \
+    -e 's/^([[:space:]]*password:[[:space:]]*).*/\1<hidden>/' \
+    "$config" 2>/dev/null
+}
+
+hy2_wg_service_path() {
+  local service_name="$1"
+
+  printf '/etc/systemd/system/%s\n' "$service_name"
+}
+
+hy2_wg_service_status_text() {
+  local service_name="$1"
+
+  if ! have_cmd systemctl; then
+    printf 'unknown'
+  elif systemctl is-active --quiet "$service_name" 2>/dev/null; then
+    printf 'active'
+  else
+    printf 'inactive'
+  fi
+}
+
+HY2_PROFILE_NAMES=()
+HY2_PROFILE_MODES=()
+HY2_PROFILE_CONFIGS=()
+HY2_PROFILE_SERVICES=()
+HY2_PROFILE_LISTENS=()
+HY2_PROFILE_TARGETS=()
+
+HY2_SELECTED_NAME=""
+HY2_SELECTED_MODE=""
+HY2_SELECTED_CONFIG=""
+HY2_SELECTED_SERVICE=""
+HY2_SELECTED_LISTEN=""
+HY2_SELECTED_TARGET=""
+
+hy2_wg_add_profile() {
+  HY2_PROFILE_NAMES+=("$1")
+  HY2_PROFILE_MODES+=("$2")
+  HY2_PROFILE_CONFIGS+=("$3")
+  HY2_PROFILE_SERVICES+=("$4")
+  HY2_PROFILE_LISTENS+=("$5")
+  HY2_PROFILE_TARGETS+=("$6")
+}
+
+hy2_wg_collect_profiles() {
+  local config profile service listen target server_host server_port remote_target
+  local meta_wg_iface meta_wg_port
+
+  HY2_PROFILE_NAMES=()
+  HY2_PROFILE_MODES=()
+  HY2_PROFILE_CONFIGS=()
+  HY2_PROFILE_SERVICES=()
+  HY2_PROFILE_LISTENS=()
+  HY2_PROFILE_TARGETS=()
+
+  config="$HY2_WG_DIR/foreign-server.yaml"
+  if [[ -f "$config" ]]; then
+    service="$(hy2_wg_service_name "foreign")"
+    listen="$(hy2_wg_extract_listen_port "$config")"
+    meta_wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+    meta_wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+    target="WireGuard ${meta_wg_iface:-wg0}:${meta_wg_port:-51820}"
+    hy2_wg_add_profile "foreign" "foreign" "$config" "$service" "${listen:-unknown}" "$target"
+  fi
+
+  if [[ -d "$HY2_WG_CLIENT_DIR" ]]; then
+    while IFS= read -r -d '' config; do
+      profile="$(basename "$config" .yaml)"
+      service="$(hy2_wg_service_name "$profile")"
+      listen="$(hy2_wg_extract_listen_port "$config")"
+      remote_target="$(hy2_wg_extract_remote_target "$config")"
+      server_host="$(hy2_wg_field_value "$config" "server")"
+      hy2_wg_split_host_port "$server_host" "FOREIGN_HOST" "8080" server_host server_port
+      target="${remote_target:-127.0.0.1:51820} via $server_host:$server_port"
+      hy2_wg_add_profile "$profile" "iran/client" "$config" "$service" "${listen:-unknown}" "$target"
+    done < <(find "$HY2_WG_CLIENT_DIR" -maxdepth 1 -type f -name '*.yaml' -print0 2>/dev/null | sort -z)
+  fi
+}
+
+hy2_wg_print_profile_row() {
+  local idx="$1"
+  local name="$2"
+  local mode="$3"
+  local listen="$4"
+  local target="$5"
+  local service="$6"
+  local status
+
+  status="$(hy2_wg_service_status_text "$service")"
+  printf '%2s. %-16s %-11s listen=%-8s service=%-32s status=%s\n' "$idx" "$name" "$mode" "$listen" "$service" "$status"
+  printf '    target: %s\n' "$target"
+}
+
+hy2_wg_list_profiles() {
+  local i count
+
+  hy2_wg_collect_profiles
+  count="${#HY2_PROFILE_NAMES[@]}"
+  if ((count == 0)); then
+    warn_line "profiles" "no generated Hysteria2 WireGuard profiles found under $HY2_WG_DIR"
+    return 1
+  fi
+
+  for ((i = 0; i < count; i++)); do
+    hy2_wg_print_profile_row \
+      "$((i + 1))" \
+      "${HY2_PROFILE_NAMES[$i]}" \
+      "${HY2_PROFILE_MODES[$i]}" \
+      "${HY2_PROFILE_LISTENS[$i]}" \
+      "${HY2_PROFILE_TARGETS[$i]}" \
+      "${HY2_PROFILE_SERVICES[$i]}"
+  done
+}
+
+hy2_wg_select_profile() {
+  local selected count
+
+  hy2_wg_list_profiles || return 1
+  count="${#HY2_PROFILE_NAMES[@]}"
+  echo
+  read -r -p "Select profile [1-$count]: " selected
+  if ! [[ "$selected" =~ ^[0-9]+$ ]] || ((selected < 1 || selected > count)); then
+    fail_line "profile selection" "invalid selection"
+    return 1
+  fi
+
+  selected=$((selected - 1))
+  HY2_SELECTED_NAME="${HY2_PROFILE_NAMES[$selected]}"
+  HY2_SELECTED_MODE="${HY2_PROFILE_MODES[$selected]}"
+  HY2_SELECTED_CONFIG="${HY2_PROFILE_CONFIGS[$selected]}"
+  HY2_SELECTED_SERVICE="${HY2_PROFILE_SERVICES[$selected]}"
+  HY2_SELECTED_LISTEN="${HY2_PROFILE_LISTENS[$selected]}"
+  HY2_SELECTED_TARGET="${HY2_PROFILE_TARGETS[$selected]}"
+}
+
+hy2_wg_show_selected_profile_details() {
+  local server_value server_host server_port remote_value remote_host remote_port
+  local sni insecure auth_secret obfs_secret service_path
+
+  service_path="$(hy2_wg_service_path "$HY2_SELECTED_SERVICE")"
+  echo -e "${YELLOW}Profile details${NC}"
+  echo "Profile name: $HY2_SELECTED_NAME"
+  echo "Mode: $HY2_SELECTED_MODE"
+  echo "Listen port: $HY2_SELECTED_LISTEN"
+  echo "Config path: $HY2_SELECTED_CONFIG"
+  echo "Service name: $HY2_SELECTED_SERVICE"
+  echo "Service path: $service_path"
+  echo "Service status: $(hy2_wg_service_status_text "$HY2_SELECTED_SERVICE")"
+
+  if [[ "$HY2_SELECTED_MODE" == "iran/client" ]]; then
+    server_value="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "server")"
+    remote_value="$(hy2_wg_extract_remote_target "$HY2_SELECTED_CONFIG")"
+    hy2_wg_split_host_port "$server_value" "" "" server_host server_port
+    hy2_wg_split_host_port "$remote_value" "127.0.0.1" "51820" remote_host remote_port
+    sni="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "sni")"
+    insecure="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "insecure")"
+    auth_secret="$(hy2_wg_client_auth_secret "$HY2_SELECTED_CONFIG")"
+    obfs_secret="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "salamander")"
+    echo "Foreign Hysteria server: ${server_host:-unknown}:${server_port:-unknown}"
+    echo "WireGuard target: ${remote_host:-127.0.0.1}:${remote_port:-51820}"
+    echo "TLS SNI/CN: ${sni:-none}"
+    echo "Insecure TLS: ${insecure:-unknown}"
+    echo "Auth password: $(hy2_wg_mask_secret_value "$auth_secret")"
+    echo "OBFS salamander password: $(hy2_wg_mask_secret_value "$obfs_secret")"
+  else
+    sni="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
+    auth_secret="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "auth")"
+    obfs_secret="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "salamander")"
+    echo "Hysteria listen address/port: :$HY2_SELECTED_LISTEN"
+    echo "TLS cert/CN path: ${sni:-unknown}"
+    echo "WireGuard target hint: $HY2_SELECTED_TARGET"
+    echo "Auth password: $(hy2_wg_mask_secret_value "$auth_secret")"
+    echo "OBFS salamander password: $(hy2_wg_mask_secret_value "$obfs_secret")"
+  fi
+
+  echo
+  echo -e "${YELLOW}Sanitized config${NC}"
+  hy2_wg_sanitize_config "$HY2_SELECTED_CONFIG"
+}
+
+hy2_wg_manage_list_profiles() {
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > List Profiles${NC}"
+  line
+  hy2_wg_list_profiles || true
+  echo
+  echo "Hint: If old tunnels conflict, use Delete Profile first."
+  pause
+}
+
+hy2_wg_manage_show_profile() {
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Show Profile Details${NC}"
+  line
+  hy2_wg_select_profile || { pause; return; }
+  echo
+  hy2_wg_show_selected_profile_details
+  pause
+}
+
+hy2_wg_iran_port_in_existing_config_except() {
+  local port="$1"
+  local except_config="$2"
+  local config existing_port
+
+  [[ -d "$HY2_WG_CLIENT_DIR" ]] || return 1
+  while IFS= read -r -d '' config; do
+    [[ "$config" == "$except_config" ]] && continue
+    existing_port="$(hy2_wg_extract_listen_port "$config")"
+    if [[ "$existing_port" == "$port" ]]; then
+      return 0
+    fi
+  done < <(find "$HY2_WG_CLIENT_DIR" -maxdepth 1 -type f -name '*.yaml' -print0 2>/dev/null)
+
+  return 1
+}
+
+hy2_wg_existing_listener_conflicts_except() {
+  local port="$1"
+  local current_port="$2"
+
+  [[ "$port" == "$current_port" ]] && return 1
+  [[ -n "$(list_listeners udp "$port")" ]]
+}
+
+hy2_wg_validate_edit_port() {
+  local label="$1"
+  local port="$2"
+  local forbid_443="$3"
+
+  if ! valid_port "$port"; then
+    fail_line "$label" "port must be 1-65535"
+    return 1
+  fi
+
+  if [[ "$forbid_443" == "true" && "$port" == "443" ]]; then
+    fail_line "$label" "UDP port 443 is forbidden for Hysteria2"
+    return 1
+  fi
+}
+
+hy2_wg_validate_config_required_fields() {
+  local mode="$1"
+  local config="$2"
+
+  if [[ ! -s "$config" ]]; then
+    fail_line "config validation" "config is empty or missing"
+    return 1
+  fi
+
+  if [[ "$mode" == "iran/client" ]]; then
+    if ! grep -q '^server:' "$config" || ! grep -q '^[[:space:]]*- listen:' "$config" || ! grep -q '^[[:space:]]*remote:' "$config"; then
+      fail_line "config validation" "required client fields missing"
+      return 1
+    fi
+  elif ! grep -q '^listen:' "$config" || ! grep -q '^[[:space:]]*type: salamander' "$config"; then
+    fail_line "config validation" "required foreign server fields missing"
+    return 1
+  fi
+
+  pass_line "config validation" "required fields found"
+}
+
+hy2_wg_edit_client_profile() {
+  local server_value server_host server_port remote_value remote_host remote_port
+  local current_listen current_sni current_insecure current_auth current_obfs
+  local new_listen new_server_host new_server_port new_remote_host new_remote_port
+  local new_sni new_insecure new_auth new_obfs confirm stop_confirm restart_confirm config_path service_path
+
+  server_value="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "server")"
+  remote_value="$(hy2_wg_extract_remote_target "$HY2_SELECTED_CONFIG")"
+  hy2_wg_split_host_port "$server_value" "FOREIGN_HOST" "8080" server_host server_port
+  hy2_wg_split_host_port "$remote_value" "127.0.0.1" "51820" remote_host remote_port
+  current_listen="$(hy2_wg_extract_listen_port "$HY2_SELECTED_CONFIG")"
+  current_sni="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "sni")"
+  current_insecure="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "insecure")"
+  current_auth="$(hy2_wg_client_auth_secret "$HY2_SELECTED_CONFIG")"
+  current_obfs="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "salamander")"
+
+  new_listen="$(prompt_default "Iran local UDP listen port" "${current_listen:-31001}")"
+  hy2_wg_validate_edit_port "Iran local UDP listen port" "$new_listen" "true" || return 0
+  if hy2_wg_iran_port_in_existing_config_except "$new_listen" "$HY2_SELECTED_CONFIG"; then
+    fail_line "duplicate local Iran listen port" "$new_listen already belongs to another generated profile"
+    return
+  fi
+  if hy2_wg_existing_listener_conflicts_except "$new_listen" "$current_listen"; then
+    fail_line "local Iran listen port" "$new_listen is already listening locally"
+    return
+  fi
+
+  new_server_host="$(prompt_default "Foreign Hysteria server host/domain" "$server_host")"
+  new_server_port="$(prompt_default "Foreign Hysteria UDP port" "${server_port:-8080}")"
+  hy2_wg_validate_edit_port "Foreign Hysteria UDP port" "$new_server_port" "true" || return 0
+  new_remote_host="$(prompt_default "Remote WireGuard host" "${remote_host:-127.0.0.1}")"
+  new_remote_port="$(prompt_default "Remote WireGuard UDP port" "${remote_port:-51820}")"
+  hy2_wg_validate_edit_port "Remote WireGuard UDP port" "$new_remote_port" "false" || return 0
+  read -r -p "TLS SNI / CN [${current_sni:-none}, empty keeps current]: " new_sni
+  new_sni="${new_sni:-$current_sni}"
+  new_insecure="$(prompt_yes_no_value "Use insecure TLS?" "${current_insecure:-true}")"
+
+  echo "Leave secrets empty to keep the existing values."
+  read -r -s -p "New auth password: " new_auth; echo
+  new_auth="${new_auth:-$current_auth}"
+  read -r -s -p "New OBFS salamander password: " new_obfs; echo
+  new_obfs="${new_obfs:-$current_obfs}"
+  if [[ -z "$new_auth" || -z "$new_obfs" ]]; then
+    fail_line "secrets" "existing config did not contain reusable secrets; enter both values"
+    return
+  fi
+
+  echo
+  echo -e "${YELLOW}Edit plan${NC}"
+  echo "Profile: $HY2_SELECTED_NAME"
+  echo "Iran listen: $current_listen -> $new_listen"
+  echo "Foreign Hysteria: $server_host:$server_port -> $new_server_host:$new_server_port"
+  echo "WireGuard target: $remote_host:$remote_port -> $new_remote_host:$new_remote_port"
+  echo
+  read -r -p "Continue with edit? [y/N]: " confirm
+  case "$confirm" in y|Y|yes|YES) ;; *) info_line "edit profile" "cancelled before writing files"; pause; return ;; esac
+
+  ensure_root || { pause; return; }
+  service_path="$(hy2_wg_service_path "$HY2_SELECTED_SERVICE")"
+  read -r -p "Stop $HY2_SELECTED_SERVICE before editing? [y/N]: " stop_confirm
+  case "$stop_confirm" in y|Y|yes|YES) systemctl stop "$HY2_SELECTED_SERVICE" 2>/dev/null || true ;; esac
+
+  backup_existing_file "$HY2_SELECTED_CONFIG"
+  [[ -f "$service_path" ]] && backup_existing_file "$service_path"
+  ensure_hy2_wg_dirs
+  hy2_wg_write_client_config \
+    "$HY2_SELECTED_NAME" \
+    "$new_server_host" \
+    "$new_server_port" \
+    "$new_listen" \
+    "$new_remote_host" \
+    "$new_remote_port" \
+    "$new_auth" \
+    "$new_obfs" \
+    "$new_sni" \
+    "$new_insecure"
+  config_path="$HY2_WRITTEN_CONFIG"
+  hy2_wg_write_service "$HY2_SELECTED_SERVICE" "client" "$config_path" "VIPTrue Hysteria2 OBFS WireGuard Iran client $HY2_SELECTED_NAME"
+  hy2_wg_validate_config_required_fields "iran/client" "$config_path" || { pause; return; }
+  systemctl daemon-reload
+  read -r -p "Restart $HY2_SELECTED_SERVICE now? [Y/n]: " restart_confirm
+  restart_confirm="${restart_confirm:-Y}"
+  case "$restart_confirm" in y|Y|yes|YES) systemctl restart "$HY2_SELECTED_SERVICE" || true ;; esac
+  systemctl status "$HY2_SELECTED_SERVICE" --no-pager -l 2>/dev/null || true
+  echo
+  echo "Next test: Manage Existing Hysteria2 WireGuard Forwards -> Test Profile"
+  echo "If you entered the wrong WireGuard internal port, use Edit Profile and change Remote WireGuard UDP port."
+}
+
+hy2_wg_edit_foreign_profile() {
+  local current_listen current_auth current_obfs cert_path key_path wg_iface wg_port
+  local new_listen new_auth new_obfs new_wg_iface new_wg_port confirm stop_confirm restart_confirm service_path config_path
+  local tls_mode
+
+  current_listen="$(hy2_wg_extract_listen_port "$HY2_SELECTED_CONFIG")"
+  current_auth="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "auth")"
+  current_obfs="$(hy2_wg_config_secret "$HY2_SELECTED_CONFIG" "salamander")"
+  cert_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
+  key_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "key")"
+  tls_mode="existing"
+  if grep -q '^[[:space:]]*sniGuard:[[:space:]]*disable' "$HY2_SELECTED_CONFIG"; then
+    tls_mode="self-signed"
+  fi
+  wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+  wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+
+  new_listen="$(prompt_default "Hysteria listen UDP port" "${current_listen:-8080}")"
+  hy2_wg_validate_edit_port "Hysteria listen UDP port" "$new_listen" "true" || return 0
+  new_wg_iface="$(prompt_default "WireGuard interface name" "${wg_iface:-wg0}")"
+  if ! valid_iface "$new_wg_iface"; then
+    fail_line "WireGuard interface name" "invalid interface name"
+    return
+  fi
+  new_wg_port="$(prompt_default "WireGuard local UDP port" "${wg_port:-51820}")"
+  hy2_wg_validate_edit_port "WireGuard local UDP port" "$new_wg_port" "false" || return 0
+
+  echo "Leave secrets empty to keep the existing values."
+  read -r -s -p "New auth password: " new_auth; echo
+  new_auth="${new_auth:-$current_auth}"
+  read -r -s -p "New OBFS salamander password: " new_obfs; echo
+  new_obfs="${new_obfs:-$current_obfs}"
+  if [[ -z "$new_auth" || -z "$new_obfs" ]]; then
+    fail_line "secrets" "existing config did not contain reusable secrets; enter both values"
+    return
+  fi
+
+  echo
+  echo -e "${YELLOW}Edit plan${NC}"
+  echo "Profile: foreign"
+  echo "Hysteria listen: $current_listen -> $new_listen"
+  echo "WireGuard test hint: ${wg_iface:-wg0}:${wg_port:-51820} -> $new_wg_iface:$new_wg_port"
+  read -r -p "Continue with edit? [y/N]: " confirm
+  case "$confirm" in y|Y|yes|YES) ;; *) info_line "edit profile" "cancelled before writing files"; pause; return ;; esac
+
+  ensure_root || { pause; return; }
+  service_path="$(hy2_wg_service_path "$HY2_SELECTED_SERVICE")"
+  read -r -p "Stop $HY2_SELECTED_SERVICE before editing? [y/N]: " stop_confirm
+  case "$stop_confirm" in y|Y|yes|YES) systemctl stop "$HY2_SELECTED_SERVICE" 2>/dev/null || true ;; esac
+
+  backup_existing_file "$HY2_SELECTED_CONFIG"
+  [[ -f "$service_path" ]] && backup_existing_file "$service_path"
+  hy2_wg_write_foreign_config "$new_listen" "$new_auth" "$new_obfs" "$tls_mode" "$cert_path" "$key_path"
+  config_path="$HY2_WRITTEN_CONFIG"
+  hy2_wg_write_service "$HY2_SELECTED_SERVICE" "server" "$config_path" "VIPTrue Hysteria2 OBFS WireGuard foreign server"
+  {
+    echo "wg_iface=$new_wg_iface"
+    echo "wg_port=$new_wg_port"
+  } > "$HY2_WG_DIR/foreign.meta"
+  chmod 600 "$HY2_WG_DIR/foreign.meta" 2>/dev/null || true
+  hy2_wg_validate_config_required_fields "foreign" "$config_path" || { pause; return; }
+  systemctl daemon-reload
+  read -r -p "Restart $HY2_SELECTED_SERVICE now? [Y/n]: " restart_confirm
+  restart_confirm="${restart_confirm:-Y}"
+  case "$restart_confirm" in y|Y|yes|YES) systemctl restart "$HY2_SELECTED_SERVICE" || true ;; esac
+  systemctl status "$HY2_SELECTED_SERVICE" --no-pager -l 2>/dev/null || true
+  echo
+  echo "Next test: Manage Existing Hysteria2 WireGuard Forwards -> Test Profile"
+}
+
+hy2_wg_manage_edit_profile() {
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Edit Profile${NC}"
+  line
+  echo "Hint: If you entered the wrong WireGuard internal port, use Edit Profile and change Remote WireGuard UDP port."
+  echo
+  hy2_wg_select_profile || { pause; return; }
+  echo
+
+  if [[ "$HY2_SELECTED_MODE" == "iran/client" ]]; then
+    hy2_wg_edit_client_profile
+  else
+    hy2_wg_edit_foreign_profile
+  fi
+
+  set_summary \
+    "Selected profile edit validation, config/service backup, generated config validation, and optional restart." \
+    "If edit failed, the invalid port, duplicate listener, or root/systemd step above identifies the likely issue." \
+    "Rerun Edit Profile with corrected values, then Test Profile." \
+    "Maybe: service restart and firewall/provider updates may be needed."
+  print_summary
+  pause
+}
+
+hy2_wg_archive_path_for() {
+  local path="$1"
+  local stamp="$2"
+  local base
+
+  base="$(basename "$path")"
+  printf '%s/%s/%s\n' "$HY2_WG_ARCHIVE_DIR" "$stamp" "$base"
+}
+
+hy2_wg_manage_delete_profile() {
+  local confirm stamp service_path archive_dir cert_path key_path meta_path destination
+
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Delete Profile${NC}"
+  line
+  hy2_wg_select_profile || { pause; return; }
+  echo
+  service_path="$(hy2_wg_service_path "$HY2_SELECTED_SERVICE")"
+  cert_path=""
+  key_path=""
+  meta_path=""
+  if [[ "$HY2_SELECTED_MODE" == "foreign" ]]; then
+    cert_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "cert")"
+    key_path="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "key")"
+    meta_path="$HY2_WG_DIR/foreign.meta"
+  fi
+
+  echo -e "${YELLOW}Delete plan${NC}"
+  echo "Profile: $HY2_SELECTED_NAME"
+  echo "Config file: $HY2_SELECTED_CONFIG"
+  echo "Systemd service file: $service_path"
+  [[ -n "$cert_path" ]] && echo "Generated cert, if profile-specific: $cert_path"
+  [[ -n "$key_path" ]] && echo "Generated key, if profile-specific: $key_path"
+  [[ -n "$meta_path" ]] && echo "Metadata file: $meta_path"
+  echo "Files will be moved to an archive directory, not hard-deleted."
+  echo
+  read -r -p "Type DELETE to archive this profile: " confirm
+  if [[ "$confirm" != "DELETE" ]]; then
+    fail_line "delete confirmation" "exact DELETE was not entered; no files moved"
+    set_summary \
+      "Delete profile confirmation." \
+      "Deletion was refused because exact DELETE was not entered." \
+      "Rerun Delete Profile and type DELETE only when ready." \
+      "No server-side change was made."
+    print_summary
+    pause
+    return
+  fi
+
+  ensure_root || { pause; return; }
+  stamp="$(date +%Y%m%d-%H%M%S)-$HY2_SELECTED_NAME"
+  archive_dir="$HY2_WG_ARCHIVE_DIR/$stamp"
+  mkdir -p "$archive_dir"
+  chmod 700 "$archive_dir" 2>/dev/null || true
+
+  if have_cmd systemctl; then
+    systemctl stop "$HY2_SELECTED_SERVICE" 2>/dev/null || true
+    systemctl disable "$HY2_SELECTED_SERVICE" 2>/dev/null || true
+  fi
+
+  for path in "$HY2_SELECTED_CONFIG" "$service_path" "$cert_path" "$key_path" "$meta_path"; do
+    [[ -n "$path" && -e "$path" ]] || continue
+    destination="$(hy2_wg_archive_path_for "$path" "$stamp")"
+    mv "$path" "$destination"
+    pass_line "archived" "$path -> $destination"
+  done
+
+  have_cmd systemctl && systemctl daemon-reload
+  echo
+  echo "Rollback path: $archive_dir"
+  set_summary \
+    "Delete profile archive workflow." \
+    "Profile files were moved to archive instead of hard-deleted." \
+    "To roll back, move files from the archive path back to their original paths and run systemctl daemon-reload." \
+    "Yes: restore/restart service if rollback is needed."
+  print_summary
+  pause
+}
+
+hy2_wg_manage_restart_profile() {
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Restart Profile Service${NC}"
+  line
+  hy2_wg_select_profile || { pause; return; }
+  echo
+  ensure_root || { pause; return; }
+  require_cmd systemctl systemd || { pause; return; }
+  systemctl daemon-reload
+  systemctl restart "$HY2_SELECTED_SERVICE"
+  systemctl status "$HY2_SELECTED_SERVICE" --no-pager -l || true
+  echo
+  echo -e "${YELLOW}Recent logs${NC}"
+  journalctl -u "$HY2_SELECTED_SERVICE" -n 40 --no-pager 2>/dev/null || true
+  set_summary \
+    "Profile service restart and recent journal logs." \
+    "If restart failed, service status and journal output identify the likely issue." \
+    "Fix config/service errors, then restart or Test Profile again." \
+    "Maybe: server-side service/config action may be needed."
+  print_summary
+  pause
+}
+
+hy2_wg_manage_test_profile() {
+  local server_value server_host server_port remote_value remote_host remote_port wg_iface wg_port
+
+  title
+  echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards > Test Profile${NC}"
+  line
+  hy2_wg_select_profile || { pause; return; }
+  echo
+
+  if [[ "$HY2_SELECTED_MODE" == "foreign" ]]; then
+    wg_iface="$(sed -nE 's/^wg_iface=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+    wg_port="$(sed -nE 's/^wg_port=(.*)$/\1/p' "$HY2_WG_DIR/foreign.meta" 2>/dev/null | head -n 1)"
+    hy2_wg_foreign_post_tests "$HY2_SELECTED_SERVICE" "$HY2_SELECTED_LISTEN" "${wg_iface:-wg0}" "${wg_port:-51820}"
+    echo
+    echo "Optional next step: Hysteria2 OBFS -> WireGuard Forward -> Wait for WireGuard Handshake"
+  else
+    server_value="$(hy2_wg_field_value "$HY2_SELECTED_CONFIG" "server")"
+    remote_value="$(hy2_wg_extract_remote_target "$HY2_SELECTED_CONFIG")"
+    hy2_wg_split_host_port "$server_value" "FOREIGN_HOST" "8080" server_host server_port
+    hy2_wg_split_host_port "$remote_value" "127.0.0.1" "51820" remote_host remote_port
+    hy2_wg_iran_post_profile_tests "$HY2_SELECTED_NAME" "$server_host" "$server_port" "$HY2_SELECTED_LISTEN"
+    echo "Remote WireGuard target through foreign server: $remote_host:$remote_port"
+    warn_line "final proof" "requires WireGuard handshake traffic from a PasarGuard test user"
+  fi
+
+  set_summary \
+    "Selected profile service, listener, and WireGuard/Hysteria target checks." \
+    "Failures identify whether service, local listener, foreign path, or WireGuard target needs attention." \
+    "Fix the failed layer, then run Test Profile or Wait for WireGuard Handshake again." \
+    "Maybe: server-side service/firewall/WireGuard action may be needed."
+  print_summary
+  pause
+}
+
+hy2_wg_manage_existing_menu() {
+  while true; do
+    title
+    echo -e "${CYAN}Manage Existing Hysteria2 WireGuard Forwards${NC}"
+    line
+    echo
+    echo "1. List profiles"
+    echo "2. Show profile details"
+    echo "3. Edit profile"
+    echo "4. Delete profile"
+    echo "5. Restart profile service"
+    echo "6. Test profile"
+    echo "7. Back"
+    echo
+    echo "Hint: If you entered the wrong WireGuard internal port, use Edit Profile and change Remote WireGuard UDP port."
+    echo "Hint: If old tunnels conflict, use Delete Profile first."
+    echo
+    read -r -p "Enter your choice [1-7]: " choice
+
+    case "$choice" in
+      1) hy2_wg_manage_list_profiles ;;
+      2) hy2_wg_manage_show_profile ;;
+      3) hy2_wg_manage_edit_profile ;;
+      4) hy2_wg_manage_delete_profile ;;
+      5) hy2_wg_manage_restart_profile ;;
+      6) hy2_wg_manage_test_profile ;;
+      7) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 hy2_wg_forward_menu() {
   while true; do
     title
@@ -1672,14 +2401,16 @@ hy2_wg_forward_menu() {
     echo "1. Foreign server mode"
     echo "2. Iran server mode"
     echo "3. Wait for WireGuard Handshake"
+    echo "4. Manage Existing Hysteria2 WireGuard Forwards"
     echo "0. Back"
     echo
-    read -r -p "Enter your choice [0-3]: " choice
+    read -r -p "Enter your choice [0-4]: " choice
 
     case "$choice" in
       1) hy2_wg_setup_foreign_server ;;
       2) hy2_wg_setup_iran_server ;;
       3) hy2_wg_wait_for_wireguard_handshake ;;
+      4) hy2_wg_manage_existing_menu ;;
       0) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac

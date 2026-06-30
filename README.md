@@ -35,6 +35,18 @@ Use Foreign server mode on each foreign WireGuard host, then Iran server mode to
 create one local UDP endpoint per foreign profile. Set each PasarGuard
 WireGuard node/profile endpoint to the printed `IRAN_IP:IRAN_PORT` value.
 
+To review or fix an already-generated forward, use:
+
+```text
+Tunnel Manager -> Hysteria2 OBFS -> WireGuard Forward -> Manage Existing Hysteria2 WireGuard Forwards
+```
+
+The management menu can list profiles, show sanitized details, edit generated
+profile fields, archive/delete stale profiles, restart services, and rerun
+profile tests. If the wrong WireGuard internal port was entered, edit the
+profile and change the remote WireGuard UDP port. If old tunnels conflict, use
+Delete profile first so files are moved to the archive instead of removed.
+
 ## Safety
 
 Do not commit real secrets, private keys, production endpoints, or server logs

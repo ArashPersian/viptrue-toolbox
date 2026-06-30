@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.5 - Unreleased
+
+- Added management for existing Hysteria2 OBFS WireGuard forwards under the
+  WireGuard Forward helper.
+- Added profile listing, sanitized profile details, edit, delete/archive,
+  restart, and test actions for generated foreign and Iran/client profiles.
+- Added edit-time validation for non-443 Hysteria2 ports, valid port ranges,
+  duplicate Iran listen ports, and local listener conflicts.
+- Added archive-first delete safety with exact `DELETE` confirmation and
+  rollback path output.
+
 ## 0.3.4 - Unreleased
 
 - Added a Hysteria2 OBFS WireGuard multi-forward helper for PasarGuard nodes.
