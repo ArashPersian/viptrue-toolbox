@@ -3,7 +3,7 @@
 Version: 0.3.4
 Branch: fasttrack/hysteria-obfs-wireguard-multi
 Base commit: 031556c Merge pull request #3 from ArashPersian/fasttrack/tunnel-manager-urgent
-Commit: pending local feature commit
+Commit: d2a1ea1 Add Hysteria2 OBFS WireGuard multi-forward
 PR status: not opened yet
 Release status: no release or tag planned for this batch
 
