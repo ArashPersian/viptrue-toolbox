@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 - Unreleased
+
+- Added Auto Tunnel Wizard with a safe two-step pairing-code workflow for
+  proven UDP Hysteria2 OBFS WireGuard tunnels.
+- Added Auto Foreign/Exit setup that generates runtime auth/OBFS secrets,
+  writes the legacy proven `/etc/hysteria` server profile, starts a dedicated
+  `viptrue-auto-hy2-foreign-*` service, runs checks, and prints a
+  `VIPTRUE_TUNNEL_BUNDLE`.
+- Added Auto Iran/Entry setup that parses and validates the bundle, asks for
+  the real inbound endpoint, writes a dedicated `viptrue-auto-hy2-iran-*`
+  client service, runs quick health checks, and prints the PasarGuard endpoint.
+- Added Auto Wizard test actions for temporary peer bundles, synthetic
+  WireGuard test handoff, UDP-only fallback commands, and recommended profile
+  scoring notes.
+- Reorganized Tunnel Manager into Auto Tunnel Wizard, Manual Tunnel Lab,
+  Manage Existing Tunnels, Test Existing Tunnels, and Diagnostics Summary while
+  keeping the detailed/manual tunnel tools available.
+- Improved managed tunnel discovery for auto services, clean manual services,
+  old generated services, and legacy `/etc/hysteria` profiles.
+
 ## 0.3.9 - Unreleased
 
 - Added interactive dependency install prompts in the Synthetic WireGuard
