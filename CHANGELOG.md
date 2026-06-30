@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.4 - Unreleased
+
+- Added a Hysteria2 OBFS WireGuard multi-forward helper for PasarGuard nodes.
+- Added foreign server setup for Hysteria2 OBFS with TLS mode selection,
+  systemd service creation, config backups, firewall notes, and WireGuard
+  status checks.
+- Added Iran server setup for multiple foreign profiles with unique local UDP
+  ports, one Hysteria2 client config/service per profile, PasarGuard endpoint
+  output, and duplicate-port protection.
+- Added a WireGuard handshake wait/confidence test for tunnel validation.
+
 ## 0.3.3 - Unreleased
 
 - Added a concise governance baseline for project state, roadmap, agent notes,
