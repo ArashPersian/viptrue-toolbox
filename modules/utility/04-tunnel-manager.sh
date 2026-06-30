@@ -10,6 +10,13 @@ LAST_ISSUE="Run a Tunnel Manager check first."
 LAST_ACTION="Start with Preflight Checks."
 LAST_SERVER_ACTION="Unknown."
 
+HY2_WG_DIR="/etc/viptrue-hy2-wg-forward"
+HY2_WG_CLIENT_DIR="$HY2_WG_DIR/clients"
+HY2_WG_CERT_DIR="$HY2_WG_DIR/certs"
+HY2_WG_SERVICE_PREFIX="viptrue-hy2-wg"
+HY2_PROMPTED_PORT=""
+HY2_WRITTEN_CONFIG=""
+
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -780,6 +787,905 @@ EOF_HY2
   pause
 }
 
+valid_profile_name() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]{1,32}$ ]]
+}
+
+yaml_quote() {
+  local escaped
+  escaped="$(printf '%s' "$1" | sed "s/'/''/g")"
+  printf "'%s'" "$escaped"
+}
+
+prompt_secret_required() {
+  local prompt="$1"
+  local value
+
+  while true; do
+    read -r -s -p "$prompt: " value
+    echo
+    if [[ -n "${value// /}" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+    fail_line "$prompt" "value is required"
+  done
+}
+
+prompt_yes_no_value() {
+  local prompt="$1"
+  local default="$2"
+  local value
+
+  read -r -p "$prompt [$default]: " value
+  value="${value:-$default}"
+  case "$value" in
+    y|Y|yes|YES|true|TRUE) printf 'true\n' ;;
+    *) printf 'false\n' ;;
+  esac
+}
+
+detect_public_ip() {
+  local ip
+
+  if have_cmd curl; then
+    ip="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+    if [[ -n "$ip" ]]; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+  fi
+
+  if have_cmd hostname; then
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    if [[ -n "$ip" ]]; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+  fi
+
+  printf 'IRAN_PUBLIC_IP\n'
+}
+
+hy2_prompt_non443_port() {
+  local label="$1"
+  local default="$2"
+  local port
+
+  port="$(prompt_default "$label" "$default")"
+  if ! valid_port "$port"; then
+    fail_line "$label" "ports must be 1-65535"
+    return 1
+  fi
+
+  if [[ "$port" == "443" ]]; then
+    fail_line "$label" "UDP port 443 is forbidden for Hysteria2; choose another port"
+    return 1
+  fi
+
+  HY2_PROMPTED_PORT="$port"
+}
+
+hy2_wg_service_name() {
+  local profile="$1"
+
+  printf '%s-%s.service\n' "$HY2_WG_SERVICE_PREFIX" "$profile"
+}
+
+hy2_bin_path() {
+  if have_cmd hysteria; then
+    command -v hysteria
+  else
+    printf '/usr/local/bin/hysteria\n'
+  fi
+}
+
+ensure_hysteria2_ready() {
+  local install
+
+  if have_cmd hysteria; then
+    pass_line "hysteria command" "$(command -v hysteria)"
+    hysteria version 2>/dev/null || true
+    return 0
+  fi
+
+  warn_line "hysteria command" "not installed"
+  echo "Suggested installer:"
+  echo "  curl -fsSL https://get.hy2.sh/ | bash"
+  echo
+  read -r -p "Install Hysteria2 now? [y/N]: " install
+  case "$install" in
+    y|Y|yes|YES)
+      require_cmd curl curl || return 1
+      curl -fsSL https://get.hy2.sh/ | bash
+      ;;
+    *)
+      fail_line "hysteria command" "install Hysteria2 before creating services"
+      return 1
+      ;;
+  esac
+
+  if have_cmd hysteria; then
+    pass_line "hysteria command" "$(command -v hysteria)"
+    return 0
+  fi
+
+  fail_line "hysteria command" "installer finished but hysteria is still not in PATH"
+  return 1
+}
+
+ensure_hy2_wg_dirs() {
+  mkdir -p "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR"
+  chmod 700 "$HY2_WG_DIR" "$HY2_WG_CLIENT_DIR" "$HY2_WG_CERT_DIR" 2>/dev/null || true
+}
+
+backup_existing_file() {
+  local path="$1"
+  local backup
+
+  if [[ -e "$path" ]]; then
+    backup="${path}.bak.$(date +%Y%m%d-%H%M%S)"
+    cp -a "$path" "$backup"
+    pass_line "backup created" "$backup"
+  fi
+}
+
+hy2_wg_print_firewall_notes() {
+  local port
+
+  echo
+  echo -e "${YELLOW}Firewall notes${NC}"
+  for port in "$@"; do
+    echo "  ufw allow $port/udp"
+    echo "  provider/security-group: allow UDP $port"
+  done
+}
+
+hy2_wg_apply_ufw_rules() {
+  local apply port
+
+  hy2_wg_print_firewall_notes "$@"
+  echo
+  read -r -p "Apply UFW allow rules now if UFW is active? [y/N]: " apply
+  case "$apply" in
+    y|Y|yes|YES)
+      if ! have_cmd ufw; then
+        warn_line "UFW" "not installed; apply provider firewall rules manually"
+        return 0
+      fi
+
+      if ! ufw status 2>/dev/null | grep -qi active; then
+        warn_line "UFW" "not active; provider firewall may still need rules"
+        return 0
+      fi
+
+      for port in "$@"; do
+        ufw allow "$port/udp"
+      done
+      ;;
+    *) info_line "UFW" "no firewall changes applied" ;;
+  esac
+}
+
+hy2_wg_write_foreign_config() {
+  local listen_port="$1"
+  local auth_pass="$2"
+  local obfs_pass="$3"
+  local tls_mode="$4"
+  local cert_path="$5"
+  local key_path="$6"
+  local config_path="$HY2_WG_DIR/foreign-server.yaml"
+  local auth_q obfs_q cert_q key_q
+
+  auth_q="$(yaml_quote "$auth_pass")"
+  obfs_q="$(yaml_quote "$obfs_pass")"
+  cert_q="$(yaml_quote "$cert_path")"
+  key_q="$(yaml_quote "$key_path")"
+
+  backup_existing_file "$config_path"
+  {
+    echo "listen: :$listen_port"
+    echo
+    echo "tls:"
+    echo "  cert: $cert_q"
+    echo "  key: $key_q"
+    if [[ "$tls_mode" == "self-signed" ]]; then
+      echo "  sniGuard: disable"
+    fi
+    echo
+    echo "auth:"
+    echo "  type: password"
+    echo "  password: $auth_q"
+    echo
+    echo "obfs:"
+    echo "  type: salamander"
+    echo "  salamander:"
+    echo "    password: $obfs_q"
+    echo
+    echo "disableUDP: false"
+    echo "udpIdleTimeout: 60s"
+  } > "$config_path"
+  chmod 600 "$config_path"
+
+  HY2_WRITTEN_CONFIG="$config_path"
+}
+
+hy2_wg_write_service() {
+  local service_name="$1"
+  local mode="$2"
+  local config_path="$3"
+  local description="$4"
+  local hy2_bin service_path
+
+  hy2_bin="$(hy2_bin_path)"
+  service_path="/etc/systemd/system/$service_name"
+  backup_existing_file "$service_path"
+
+  cat > "$service_path" <<EOF_SERVICE
+[Unit]
+Description=$description
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$hy2_bin $mode --config $config_path
+Restart=always
+RestartSec=3
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF_SERVICE
+
+  chmod 644 "$service_path"
+}
+
+hy2_wg_start_service_if_requested() {
+  local service_name="$1"
+  local start_now="$2"
+
+  require_cmd systemctl systemd || return 1
+  systemctl daemon-reload
+
+  if [[ "$start_now" == "true" ]]; then
+    systemctl enable --now "$service_name"
+    sleep 1
+  else
+    info_line "$service_name" "written but not started"
+  fi
+}
+
+hy2_wg_foreign_post_tests() {
+  local service_name="$1"
+  local listen_port="$2"
+  local wg_iface="$3"
+  local wg_port="$4"
+
+  echo
+  line
+  echo -e "${CYAN}Foreign Server Post-Setup Tests${NC}"
+
+  if have_cmd systemctl && systemctl is-active --quiet "$service_name"; then
+    pass_line "$service_name" "active"
+  else
+    fail_line "$service_name" "not active or systemctl unavailable"
+  fi
+
+  check_local_listener udp "$listen_port"
+
+  if have_cmd ip && ip link show "$wg_iface" >/dev/null 2>&1; then
+    pass_line "WireGuard interface $wg_iface" "exists"
+  else
+    fail_line "WireGuard interface $wg_iface" "not found"
+  fi
+
+  check_local_listener udp "$wg_port"
+
+  echo
+  echo -e "${YELLOW}WireGuard status${NC}"
+  if have_cmd wg; then
+    wg show "$wg_iface" 2>/dev/null || wg show || true
+    echo
+    echo -e "${YELLOW}Latest handshakes${NC}"
+    wg show "$wg_iface" latest-handshakes 2>/dev/null || true
+    echo
+    echo -e "${YELLOW}Transfer stats${NC}"
+    wg show "$wg_iface" transfer 2>/dev/null || true
+  else
+    warn_line "wg command" "suggest: $(install_hint wireguard-tools)"
+  fi
+}
+
+hy2_wg_setup_foreign_server() {
+  local listen_port auth_pass obfs_pass tls_choice cert_path key_path cert_cn
+  local wg_port wg_iface confirm start_now service_name config_path tls_mode
+
+  title
+  echo -e "${CYAN}Hysteria2 OBFS -> WireGuard Forward > Foreign Server Mode${NC}"
+  line
+  echo
+
+  hy2_prompt_non443_port "Hysteria listen UDP port" "8080" || {
+    set_summary \
+      "Foreign Hysteria2 listen port." \
+      "UDP port 443 or an invalid port was refused." \
+      "Rerun Foreign Server Mode with a non-443 UDP port such as 8080 or 8443." \
+      "No server-side change was made."
+    print_summary
+    pause
+    return
+  }
+  listen_port="$HY2_PROMPTED_PORT"
+
+  auth_pass="$(prompt_secret_required "Auth password")"
+  obfs_pass="$(prompt_secret_required "OBFS salamander password")"
+
+  echo
+  echo "TLS mode:"
+  echo "1. Self-signed/insecure for private tunnel"
+  echo "2. Existing certificate and key paths"
+  read -r -p "Select TLS mode [1-2]: " tls_choice
+  case "$tls_choice" in
+    2)
+      tls_mode="existing"
+      read -r -p "Existing cert path: " cert_path
+      read -r -p "Existing key path: " key_path
+      if [[ ! -r "$cert_path" || ! -r "$key_path" ]]; then
+        fail_line "TLS cert/key" "both paths must exist and be readable"
+        pause
+        return
+      fi
+      ;;
+    *)
+      tls_mode="self-signed"
+      cert_cn="$(prompt_default "Self-signed cert CN/SNI placeholder" "viptrue-private-tunnel.local")"
+      cert_cn="${cert_cn//\//-}"
+      cert_path="$HY2_WG_CERT_DIR/foreign-server.crt"
+      key_path="$HY2_WG_CERT_DIR/foreign-server.key"
+      ;;
+  esac
+
+  wg_port="$(prompt_default "WireGuard local UDP port" "51820")"
+  if ! valid_port "$wg_port"; then
+    fail_line "WireGuard local UDP port" "ports must be 1-65535"
+    pause
+    return
+  fi
+
+  wg_iface="$(prompt_default "WireGuard interface name" "wg0")"
+  if ! valid_iface "$wg_iface"; then
+    fail_line "WireGuard interface name" "invalid interface name"
+    pause
+    return
+  fi
+
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  echo "Config directory: $HY2_WG_DIR"
+  echo "Hysteria UDP listen: $listen_port"
+  echo "WireGuard target on this foreign server: 127.0.0.1:$wg_port ($wg_iface)"
+  echo "Existing files will be backed up before overwrite."
+  echo "Firewall command preview: ufw allow $listen_port/udp"
+  echo
+  read -r -p "Create foreign Hysteria2 config and systemd service now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info_line "foreign setup" "cancelled before writing files"
+      set_summary \
+        "Foreign server Hysteria2 OBFS WireGuard plan." \
+        "Setup was cancelled before writing files." \
+        "Rerun Foreign Server Mode when ready to create the config/service." \
+        "No server-side change was made."
+      print_summary
+      pause
+      return
+      ;;
+  esac
+
+  ensure_root || { pause; return; }
+  ensure_hysteria2_ready || { pause; return; }
+  ensure_hy2_wg_dirs
+
+  if [[ "$tls_mode" == "self-signed" ]]; then
+    require_cmd openssl openssl || { pause; return; }
+    backup_existing_file "$cert_path"
+    backup_existing_file "$key_path"
+    openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout "$key_path" \
+      -out "$cert_path" \
+      -days 3650 \
+      -subj "/CN=$cert_cn" >/dev/null 2>&1
+    chmod 600 "$key_path"
+    chmod 644 "$cert_path"
+  fi
+
+  service_name="$(hy2_wg_service_name "foreign")"
+  hy2_wg_write_foreign_config "$listen_port" "$auth_pass" "$obfs_pass" "$tls_mode" "$cert_path" "$key_path"
+  config_path="$HY2_WRITTEN_CONFIG"
+  hy2_wg_write_service "$service_name" "server" "$config_path" "VIPTrue Hysteria2 OBFS WireGuard foreign server"
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  hy2_wg_apply_ufw_rules "$listen_port"
+  hy2_wg_foreign_post_tests "$service_name" "$listen_port" "$wg_iface" "$wg_port"
+
+  set_summary \
+    "Foreign Hysteria2 server config, service, firewall note, service/listener checks, and WireGuard status." \
+    "Failures usually mean Hysteria2 is not active, UDP is blocked, or WireGuard is not listening locally." \
+    "Fix the failed layer, then connect one PasarGuard test peer through the Iran endpoint." \
+    "Yes: foreign server service/firewall/WireGuard may need action."
+  print_summary
+  pause
+}
+
+hy2_wg_iran_port_in_existing_config() {
+  local port="$1"
+
+  [[ -d "$HY2_WG_CLIENT_DIR" ]] || return 1
+  grep -R -- "listen: 0.0.0.0:$port" "$HY2_WG_CLIENT_DIR" >/dev/null 2>&1
+}
+
+hy2_wg_port_already_selected() {
+  local port="$1"
+  shift
+  local selected
+
+  for selected in "$@"; do
+    if [[ "$selected" == "$port" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+hy2_wg_write_client_config() {
+  local profile="$1"
+  local foreign_host="$2"
+  local foreign_port="$3"
+  local iran_port="$4"
+  local remote_wg_host="$5"
+  local remote_wg_port="$6"
+  local auth_pass="$7"
+  local obfs_pass="$8"
+  local tls_sni="$9"
+  local insecure_tls="${10}"
+  local config_path="$HY2_WG_CLIENT_DIR/$profile.yaml"
+  local server_q auth_q obfs_q sni_q
+
+  server_q="$(yaml_quote "$foreign_host:$foreign_port")"
+  auth_q="$(yaml_quote "$auth_pass")"
+  obfs_q="$(yaml_quote "$obfs_pass")"
+  sni_q="$(yaml_quote "$tls_sni")"
+
+  backup_existing_file "$config_path"
+  {
+    echo "server: $server_q"
+    echo
+    echo "auth: $auth_q"
+    echo
+    echo "obfs:"
+    echo "  type: salamander"
+    echo "  salamander:"
+    echo "    password: $obfs_q"
+    echo
+    echo "tls:"
+    if [[ -n "${tls_sni// /}" ]]; then
+      echo "  sni: $sni_q"
+    fi
+    echo "  insecure: $insecure_tls"
+    echo
+    echo "udpForwarding:"
+    echo "  - listen: 0.0.0.0:$iran_port"
+    echo "    remote: $remote_wg_host:$remote_wg_port"
+    echo "    timeout: 60s"
+  } > "$config_path"
+  chmod 600 "$config_path"
+
+  HY2_WRITTEN_CONFIG="$config_path"
+}
+
+hy2_wg_iran_post_profile_tests() {
+  local profile="$1"
+  local foreign_host="$2"
+  local foreign_port="$3"
+  local iran_port="$4"
+  local service_name
+
+  service_name="$(hy2_wg_service_name "$profile")"
+  echo
+  line
+  echo -e "${CYAN}Iran Profile Post-Setup Tests: $profile${NC}"
+
+  if have_cmd systemctl && systemctl is-active --quiet "$service_name"; then
+    pass_line "$service_name" "active"
+  else
+    fail_line "$service_name" "not active or systemctl unavailable"
+  fi
+
+  check_local_listener udp "$iran_port"
+
+  if have_cmd nc; then
+    if nc -zu -w2 "$foreign_host" "$foreign_port" >/dev/null 2>&1; then
+      pass_line "foreign Hysteria UDP probe" "$foreign_host:$foreign_port accepted a best-effort UDP probe"
+    else
+      warn_line "foreign Hysteria UDP probe" "UDP reachability cannot be fully proven without WireGuard handshake traffic"
+    fi
+  else
+    warn_line "foreign Hysteria UDP probe" "install netcat for a best-effort UDP probe"
+  fi
+
+  warn_line "UDP proof" "final proof requires a PasarGuard WireGuard user handshake"
+  echo "Set WireGuard endpoint to IRAN_IP:$iran_port for one test user, then run handshake verification on the foreign server."
+}
+
+hy2_wg_setup_iran_server() {
+  local count i profile foreign_host foreign_port iran_port remote_wg_host remote_wg_port
+  local auth_pass obfs_pass tls_sni insecure_tls confirm start_now iran_public
+  local -a profiles=()
+  local -a foreign_hosts=()
+  local -a foreign_ports=()
+  local -a iran_ports=()
+  local -a remote_wg_hosts=()
+  local -a remote_wg_ports=()
+  local -a auth_passes=()
+  local -a obfs_passes=()
+  local -a tls_snis=()
+  local -a insecure_tls_values=()
+  local service_name config_path
+
+  title
+  echo -e "${CYAN}Hysteria2 OBFS -> WireGuard Forward > Iran Server Mode${NC}"
+  line
+  echo
+  read -r -p "How many foreign servers to add? " count
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || ((count < 1 || count > 50)); then
+    fail_line "foreign server count" "enter a number from 1 to 50"
+    pause
+    return
+  fi
+
+  for ((i = 1; i <= count; i++)); do
+    echo
+    echo -e "${YELLOW}Foreign profile $i of $count${NC}"
+    profile="$(prompt_default "Profile name, example de1/nl1/tr1" "de$i")"
+    if ! valid_profile_name "$profile"; then
+      fail_line "profile name" "use 1-32 letters, numbers, dot, underscore, or dash"
+      pause
+      return
+    fi
+
+    read -r -p "Foreign IP/domain: " foreign_host
+    if [[ -z "${foreign_host// /}" ]]; then
+      fail_line "foreign IP/domain" "value is required"
+      pause
+      return
+    fi
+
+    hy2_prompt_non443_port "Foreign Hysteria UDP port" "8080" || {
+      set_summary \
+        "Iran profile foreign Hysteria2 port." \
+        "UDP port 443 or an invalid port was refused." \
+        "Rerun Iran Server Mode with a non-443 foreign Hysteria UDP port." \
+        "No server-side change was made."
+      print_summary
+      pause
+      return
+    }
+    foreign_port="$HY2_PROMPTED_PORT"
+
+    hy2_prompt_non443_port "Iran local UDP listen port" "3100$i" || {
+      set_summary \
+        "Iran profile local listen port." \
+        "UDP port 443 or an invalid port was refused." \
+        "Choose a unique non-443 Iran UDP listen port, for example 31001." \
+        "No server-side change was made."
+      print_summary
+      pause
+      return
+    }
+    iran_port="$HY2_PROMPTED_PORT"
+
+    if hy2_wg_port_already_selected "$iran_port" "${iran_ports[@]}"; then
+      fail_line "duplicate Iran UDP port" "$iran_port is already used in this setup plan"
+      set_summary \
+        "Iran local UDP listen ports." \
+        "Duplicate Iran UDP port $iran_port was refused." \
+        "Rerun Iran Server Mode with one unique Iran UDP listen port per foreign profile." \
+        "No server-side change was made."
+      print_summary
+      pause
+      return
+    fi
+
+    if [[ -n "$(list_listeners udp "$iran_port")" ]]; then
+      fail_line "Iran UDP port $iran_port" "already listening locally"
+      pause
+      return
+    fi
+
+    if hy2_wg_iran_port_in_existing_config "$iran_port"; then
+      fail_line "Iran UDP port $iran_port" "already appears in an existing generated client config"
+      pause
+      return
+    fi
+
+    remote_wg_host="$(prompt_default "Remote WireGuard host from foreign server view" "127.0.0.1")"
+    remote_wg_port="$(prompt_default "Remote WireGuard UDP port" "51820")"
+    if ! valid_port "$remote_wg_port"; then
+      fail_line "Remote WireGuard UDP port" "ports must be 1-65535"
+      pause
+      return
+    fi
+
+    auth_pass="$(prompt_secret_required "Auth password for $profile")"
+    obfs_pass="$(prompt_secret_required "OBFS salamander password for $profile")"
+    read -r -p "TLS SNI if needed, empty=none: " tls_sni
+    insecure_tls="$(prompt_yes_no_value "Use insecure TLS for this private tunnel?" "Y")"
+
+    profiles+=("$profile")
+    foreign_hosts+=("$foreign_host")
+    foreign_ports+=("$foreign_port")
+    iran_ports+=("$iran_port")
+    remote_wg_hosts+=("$remote_wg_host")
+    remote_wg_ports+=("$remote_wg_port")
+    auth_passes+=("$auth_pass")
+    obfs_passes+=("$obfs_pass")
+    tls_snis+=("$tls_sni")
+    insecure_tls_values+=("$insecure_tls")
+  done
+
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  for ((i = 0; i < count; i++)); do
+    echo "- ${profiles[$i]}: Iran UDP ${iran_ports[$i]} -> ${foreign_hosts[$i]}:${foreign_ports[$i]} -> ${remote_wg_hosts[$i]}:${remote_wg_ports[$i]}"
+  done
+  echo "Existing generated configs/services will be backed up before overwrite."
+  echo
+  read -r -p "Create Iran Hysteria2 client configs and services now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info_line "Iran setup" "cancelled before writing files"
+      set_summary \
+        "Iran multi-profile Hysteria2 OBFS WireGuard plan." \
+        "Setup was cancelled before writing files." \
+        "Rerun Iran Server Mode when ready to create the configs/services." \
+        "No server-side change was made."
+      print_summary
+      pause
+      return
+      ;;
+  esac
+
+  ensure_root || { pause; return; }
+  ensure_hysteria2_ready || { pause; return; }
+  ensure_hy2_wg_dirs
+  start_now="$(prompt_yes_no_value "Enable and start all profile services now?" "Y")"
+
+  for ((i = 0; i < count; i++)); do
+    profile="${profiles[$i]}"
+    service_name="$(hy2_wg_service_name "$profile")"
+    hy2_wg_write_client_config \
+      "$profile" \
+      "${foreign_hosts[$i]}" \
+      "${foreign_ports[$i]}" \
+      "${iran_ports[$i]}" \
+      "${remote_wg_hosts[$i]}" \
+      "${remote_wg_ports[$i]}" \
+      "${auth_passes[$i]}" \
+      "${obfs_passes[$i]}" \
+      "${tls_snis[$i]}" \
+      "${insecure_tls_values[$i]}"
+    config_path="$HY2_WRITTEN_CONFIG"
+    hy2_wg_write_service "$service_name" "client" "$config_path" "VIPTrue Hysteria2 OBFS WireGuard Iran client $profile"
+    hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  done
+
+  hy2_wg_apply_ufw_rules "${iran_ports[@]}"
+  iran_public="$(detect_public_ip)"
+
+  for ((i = 0; i < count; i++)); do
+    hy2_wg_iran_post_profile_tests "${profiles[$i]}" "${foreign_hosts[$i]}" "${foreign_ports[$i]}" "${iran_ports[$i]}"
+    echo "Set PasarGuard WireGuard endpoint for ${profiles[$i]} to: $iran_public:${iran_ports[$i]}"
+  done
+
+  set_summary \
+    "Iran Hysteria2 client configs/services, unique UDP listeners, firewall notes, and PasarGuard endpoint output." \
+    "Failures usually mean the local Iran listener is not active, the foreign Hysteria UDP path is blocked, or credentials/SNI do not match." \
+    "Set one PasarGuard test user endpoint to the printed IRAN_IP:IRAN_PORT and verify handshake on the foreign server." \
+    "Yes: Iran service/firewall and foreign Hysteria/WireGuard may need action."
+  print_summary
+  pause
+}
+
+wg_latest_handshake_value() {
+  local iface="$1"
+  local peer="${2:-}"
+
+  if [[ -n "$peer" ]]; then
+    wg show "$iface" latest-handshakes 2>/dev/null | awk -v peer="$peer" '$1 == peer {print $2; found=1} END {if (!found) print 0}'
+  else
+    wg show "$iface" latest-handshakes 2>/dev/null | awk 'BEGIN {max=0} $2 > max {max=$2} END {print max+0}'
+  fi
+}
+
+wg_transfer_total_value() {
+  local iface="$1"
+  local peer="${2:-}"
+
+  if [[ -n "$peer" ]]; then
+    wg show "$iface" transfer 2>/dev/null | awk -v peer="$peer" '$1 == peer {print $2 + $3; found=1} END {if (!found) print 0}'
+  else
+    wg show "$iface" transfer 2>/dev/null | awk 'BEGIN {sum=0} {sum += $2 + $3} END {print sum+0}'
+  fi
+}
+
+hy2_wg_any_foreign_service_active() {
+  have_cmd systemctl || return 1
+  systemctl is-active --quiet "$(hy2_wg_service_name "foreign")"
+}
+
+hy2_wg_any_iran_listener_active() {
+  local config port output
+  local found="false"
+
+  [[ -d "$HY2_WG_CLIENT_DIR" ]] || return 1
+  while IFS= read -r -d '' config; do
+    port="$(sed -nE 's/^[[:space:]]*listen:[[:space:]]*0\.0\.0\.0:([0-9]+).*/\1/p' "$config" | head -n 1)"
+    [[ -n "$port" ]] || continue
+    output="$(list_listeners udp "$port")"
+    if [[ -n "$output" ]]; then
+      found="true"
+      pass_line "Iran UDP listener $port" "active on this host"
+    else
+      fail_line "Iran UDP listener $port" "not active on this host"
+    fi
+  done < <(find "$HY2_WG_CLIENT_DIR" -maxdepth 1 -type f -name '*.yaml' -print0 2>/dev/null)
+
+  [[ "$found" == "true" ]]
+}
+
+hy2_wg_wait_for_wireguard_handshake() {
+  local wg_iface peer timeout start_ts start_hs start_transfer end_hs end_transfer
+  local deadline now hysteria_ok iran_ok handshake_ok transfer_ok
+
+  title
+  echo -e "${CYAN}Hysteria2 OBFS -> WireGuard Forward > Wait for WireGuard Handshake${NC}"
+  line
+  echo
+
+  wg_iface="$(prompt_default "Foreign WireGuard interface" "wg0")"
+  read -r -p "Optional peer public key, empty=any peer: " peer
+  timeout="$(prompt_default "Timeout seconds" "90")"
+  if ! [[ "$timeout" =~ ^[0-9]+$ ]] || ((timeout < 1 || timeout > 900)); then
+    fail_line "timeout" "enter 1-900 seconds"
+    pause
+    return
+  fi
+
+  require_cmd wg wireguard-tools || { pause; return; }
+  if ! wg show "$wg_iface" >/dev/null 2>&1; then
+    fail_line "WireGuard interface $wg_iface" "wg show failed"
+    pause
+    return
+  fi
+
+  start_ts="$(date +%s)"
+  start_hs="$(wg_latest_handshake_value "$wg_iface" "$peer")"
+  start_transfer="$(wg_transfer_total_value "$wg_iface" "$peer")"
+  deadline=$((start_ts + timeout))
+
+  echo
+  echo "Current latest handshake timestamp: $start_hs"
+  echo "Current transfer byte total: $start_transfer"
+  echo "Connect one PasarGuard WireGuard test user now."
+
+  handshake_ok="false"
+  transfer_ok="false"
+  while true; do
+    now="$(date +%s)"
+    end_hs="$(wg_latest_handshake_value "$wg_iface" "$peer")"
+    end_transfer="$(wg_transfer_total_value "$wg_iface" "$peer")"
+
+    if ((end_hs > start_hs && end_hs >= start_ts - 5)); then
+      handshake_ok="true"
+    fi
+    if ((end_transfer > start_transfer)); then
+      transfer_ok="true"
+    fi
+    if [[ "$handshake_ok" == "true" && "$transfer_ok" == "true" ]]; then
+      break
+    fi
+    if ((now >= deadline)); then
+      break
+    fi
+    sleep 3
+  done
+
+  echo
+  line
+  echo -e "${CYAN}Real Confidence Test Result${NC}"
+  if hy2_wg_any_foreign_service_active; then
+    hysteria_ok="true"
+    pass_line "Hysteria service" "$(hy2_wg_service_name "foreign") active"
+  else
+    hysteria_ok="false"
+    fail_line "Hysteria service" "foreign service is not active on this host"
+  fi
+
+  if hy2_wg_any_iran_listener_active; then
+    iran_ok="true"
+  else
+    iran_ok="false"
+    warn_line "Iran UDP listener" "not found on this host; run Iran post-setup checks on the Iran server"
+  fi
+
+  if [[ "$handshake_ok" == "true" ]]; then
+    pass_line "WireGuard handshake" "latest handshake changed from $start_hs to $end_hs"
+  else
+    fail_line "WireGuard handshake" "no recent handshake update detected"
+  fi
+
+  if [[ "$transfer_ok" == "true" ]]; then
+    pass_line "transfer bytes" "increased from $start_transfer to $end_transfer"
+  else
+    fail_line "transfer bytes" "no byte increase detected"
+  fi
+
+  echo
+  if [[ "$hysteria_ok" == "true" && "$iran_ok" == "true" && "$handshake_ok" == "true" && "$transfer_ok" == "true" ]]; then
+    pass_line "final result" "Hysteria service active; Iran UDP listener active; WireGuard handshake updated; transfer bytes increased"
+    set_summary \
+      "Hysteria service, Iran listener, WireGuard handshake timestamp, and transfer byte movement." \
+      "No failure detected in the checked layers." \
+      "Keep this profile and repeat for each PasarGuard WireGuard node/profile." \
+      "No additional server-side action needed for this profile."
+  else
+    fail_line "final result" "one or more layers failed"
+    echo "Possible failed layer:"
+    echo "- Iran listener"
+    echo "- Hysteria service"
+    echo "- Foreign Hysteria server"
+    echo "- WireGuard handshake"
+    echo "- endpoint/port mismatch"
+    echo "- firewall/provider UDP block"
+    set_summary \
+      "Hysteria service, Iran listener if local, WireGuard handshake timestamp, and transfer byte movement." \
+      "A failed layer above indicates the likely break point." \
+      "Fix service/listener/endpoint/firewall settings, then rerun Wait for WireGuard Handshake." \
+      "Yes: at least one server-side layer likely needs action."
+  fi
+
+  print_summary
+  pause
+}
+
+hy2_wg_forward_menu() {
+  while true; do
+    title
+    echo -e "${CYAN}Hysteria2 OBFS -> WireGuard Forward${NC}"
+    line
+    echo
+    echo "1. Foreign server mode"
+    echo "2. Iran server mode"
+    echo "3. Wait for WireGuard Handshake"
+    echo "0. Back"
+    echo
+    read -r -p "Enter your choice [0-3]: " choice
+
+    case "$choice" in
+      1) hy2_wg_setup_foreign_server ;;
+      2) hy2_wg_setup_iran_server ;;
+      3) hy2_wg_wait_for_wireguard_handshake ;;
+      0) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 reverse_tls_sni_notes() {
   local local_port placeholder_domain
 
@@ -859,12 +1765,13 @@ while true; do
   echo "4. GRE helper"
   echo "5. WireGuard helper"
   echo "6. Hysteria2 helper"
-  echo "7. Reverse TLS / SNI notes"
-  echo "8. Diagnostics summary"
+  echo "7. Hysteria2 OBFS -> WireGuard Forward"
+  echo "8. Reverse TLS / SNI notes"
+  echo "9. Diagnostics summary"
   echo "0. Back"
   echo "99. Exit"
   echo
-  read -r -p "Enter your choice [0-8,99]: " choice
+  read -r -p "Enter your choice [0-9,99]: " choice
 
   case "$choice" in
     1) preflight_checks ;;
@@ -873,8 +1780,9 @@ while true; do
     4) gre_helper ;;
     5) wireguard_helper ;;
     6) hysteria2_helper ;;
-    7) reverse_tls_sni_notes ;;
-    8) diagnostics_summary_screen ;;
+    7) hy2_wg_forward_menu ;;
+    8) reverse_tls_sni_notes ;;
+    9) diagnostics_summary_screen ;;
     0) break ;;
     99) exit_toolbox ;;
     *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
