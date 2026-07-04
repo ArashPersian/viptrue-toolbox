@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3 - Unreleased
+
+- Added `Private -> Syncplay Server` with install/reinstall, status, restart,
+  stop, logs, change port/password, firewall, and uninstall actions.
+- Added an Ubuntu/Debian server installer that installs only the Syncplay server
+  path, uses `/opt/syncplay`, runs `make install-server`, and creates a managed
+  systemd service.
+- Stored Syncplay runtime password and salt in
+  `/etc/viptrue/syncplay/syncplay.env` with `chmod 600` instead of placing
+  secrets in the systemd command line.
+- Added UFW-active TCP port opening, provider firewall reminders, listener
+  checks, and client connection output for the default `8999/tcp` port.
+
 ## 0.4.2 - Unreleased
 
 - Polished Auto Tunnel Expert scan output with a scan summary card before any
