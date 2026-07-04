@@ -1,54 +1,50 @@
 # Project State
 
-Version: 0.4.2
-Branch: fasttrack/auto-tunnel-expert-ux
-Base commit: e083d8a Merge pull request #11 from ArashPersian/fasttrack/tunnel-engine-registry-scanner
-Commit: 603f601 Polish Auto Tunnel Expert scan UX
-PR status: opened as #12; merge pending GitHub checks
+Version: 0.4.3
+Branch: fasttrack/private-syncplay-server
+Base commit: 7ef52f3 Fast Track: Auto Tunnel Expert UX Polish
+Commit: pending
+PR status: not opened yet
 Release status: no release, tag, or deploy planned for this batch
 
 ## Scope
 
-- Polish Auto Tunnel Expert scan output for operator readability.
-- Add a scan summary card before rankings.
-- Hide the full 49-engine ranking by default.
-- Group engines by buildability and operator intent.
-- Add scan options for compact/full/buildable/priority/emergency/proof views.
-- Save scan bundles and v2 tunnel bundles to copy-friendly files.
-- Keep WireGuard and Xray as application-specific presets, not top generic
-  recommendations.
+- Add `Private -> Syncplay Server` to the existing Private menu.
+- Install/reinstall the official Syncplay server on Ubuntu/Debian VPS systems.
+- Store runtime config under `/etc/viptrue/syncplay/syncplay.env` with
+  `chmod 600`.
+- Generate a password and salt by default while keeping passwords out of normal
+  status output and systemd `ExecStart`.
+- Create and manage a systemd service, default `viptrue-syncplay.service`.
+- Open the selected TCP port in UFW only when UFW is active.
+- Add status, restart, stop, logs, change port/password, firewall, and uninstall
+  actions.
 
 ## Checks
 
 Local checks:
 
-- Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
+- Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh menus/private.sh modules/private/01-syncplay-server.sh`
+- Passed: menu smoke to `Main -> Private`
+- Passed: menu smoke to `Private -> Syncplay Server`
+- Passed: status path works when not installed
+- Passed: install smoke validates invalid port before root actions
+- Passed: firewall function refuses invalid port
+- Passed: normal status does not print password
+- Passed: uninstall confirmation exists
+- Passed: generated env/unit smoke keeps password out of `ExecStart`
+- Passed: static check for no real secrets/endpoints
+- Passed: no forbidden detection wording check
 - Passed: `git diff --check`
-- Passed: Auto Tunnel Expert scan menu smoke
-- Passed: Summary Card appears before tables
-- Passed: Recommended engine is clear
-- Passed: Default output hides the 49-engine ranking
-- Passed: Full ranking option shows the full registry, including
-  application-specific and emergency groups
-- Passed: Short terminal-safe ranking headers
-- Passed: Destination listener warning appears once in the summary card
-- Passed: WireGuard/Xray are not top generic recommendation
-- Passed: Emergency engines are grouped separately
-- Passed: Scan bundle is saved to file
-- Passed: Proof commands are optional and only printed from option 7
-- Passed: No forbidden detection wording
-- Passed: Secret bundle warning static check
-- Passed: Scan bundle says no auth/OBFS secrets
 - Not run locally: ShellCheck is unavailable in PowerShell and Git Bash PATH
+- Pending: GitHub Actions ShellCheck after PR opens
 
 ## Remaining Issues
 
-- Live latency, packet-loss, and payload-delivery scoring still require real
-  Iran/Foreign server validation.
-- TCP build remains priority-next; WaterWall Reverse TLS is recommended as next
-  TCP implementation but is not buildable yet.
+- Live install/reinstall requires a real Ubuntu/Debian VPS with root access.
+- Provider firewall/security-group rules still must allow the selected TCP port.
 
 ## Next Exact Step
 
-Run the UX validation matrix, open the Auto Tunnel Expert UX Polish PR, review
+Run the local validation matrix, open the Syncplay Server installer PR, review
 GitHub ShellCheck, and merge only if checks pass.

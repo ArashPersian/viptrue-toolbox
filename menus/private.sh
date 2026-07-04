@@ -9,14 +9,14 @@ viptrue_private_menu() {
     title
     echo -e "${CYAN}Private Menu${NC}"
     echo
-    echo -e "${YELLOW}Private menu is empty for now.${NC}"
-    echo
-    echo "0. Back"
+    echo "1) Syncplay Server"
+    echo "0) Back"
     echo
     line
-    read -r -p "Enter your choice [0]: " choice
+    read -r -p "Enter your choice [0-1]: " choice
 
     case "$choice" in
+      1) bash "$BASE_DIR/modules/private/01-syncplay-server.sh" ;;
       0) return 0 ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
