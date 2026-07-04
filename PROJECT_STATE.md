@@ -4,7 +4,7 @@ Version: 0.4.3
 Branch: fasttrack/private-syncplay-server
 Base commit: 7ef52f3 Fast Track: Auto Tunnel Expert UX Polish
 Commit: adc2b4d Add private Syncplay server manager
-PR status: not opened yet
+PR status: opened as #13; merge pending GitHub checks
 Release status: no release, tag, or deploy planned for this batch
 
 ## Scope
@@ -37,7 +37,7 @@ Local checks:
 - Passed: no forbidden detection wording check
 - Passed: `git diff --check`
 - Not run locally: ShellCheck is unavailable in PowerShell and Git Bash PATH
-- Pending: GitHub Actions ShellCheck after PR opens
+- Pending: GitHub Actions ShellCheck for PR #13
 
 ## Remaining Issues
 
