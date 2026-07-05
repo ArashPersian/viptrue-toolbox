@@ -1,50 +1,49 @@
 # Project State
 
-Version: 0.4.3
-Branch: fasttrack/private-syncplay-server
-Base commit: 7ef52f3 Fast Track: Auto Tunnel Expert UX Polish
-Commit: adc2b4d Add private Syncplay server manager
-PR status: opened as #13; merge pending GitHub checks
+Version: 0.4.4
+Branch: fasttrack/fix-syncplay-install-prompt
+Base commit: 5ebaa17 Merge pull request #13 from ArashPersian/fasttrack/private-syncplay-server
+Commit: pending PR branch
+PR status: preparing Syncplay install prompt hotfix
 Release status: no release, tag, or deploy planned for this batch
 
 ## Scope
 
-- Add `Private -> Syncplay Server` to the existing Private menu.
-- Install/reinstall the official Syncplay server on Ubuntu/Debian VPS systems.
-- Store runtime config under `/etc/viptrue/syncplay/syncplay.env` with
-  `chmod 600`.
-- Generate a password and salt by default while keeping passwords out of normal
-  status output and systemd `ExecStart`.
-- Create and manage a systemd service, default `viptrue-syncplay.service`.
-- Open the selected TCP port in UFW only when UFW is active.
-- Add status, restart, stop, logs, change port/password, firewall, and uninstall
-  actions.
+- Fix `Private -> Syncplay Server -> Install / Reinstall` crashing before the
+  install confirmation with `service_name: unbound variable`.
+- Preserve the existing Syncplay manager behavior while routing the Private menu
+  through a small hotfix wrapper.
+- Avoid using Codex for this small patch unless GitHub checks fail or deeper
+  refactor is needed.
+
+## Root Cause
+
+- `prompt_install_config` used local variable names that matched the output
+  variable names passed by `install_or_reinstall_syncplay`.
+- With Bash local scoping and `printf -v`, the caller's `service_name` stayed
+  unset.
+- Because the script runs with `set -u`, printing the install Plan failed before
+  any root/install action started.
 
 ## Checks
 
-Local checks:
+Planned checks before asking for user VPS testing:
 
-- Passed: `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh menus/private.sh modules/private/01-syncplay-server.sh`
-- Passed: menu smoke to `Main -> Private`
-- Passed: menu smoke to `Private -> Syncplay Server`
-- Passed: status path works when not installed
-- Passed: install smoke validates invalid port before root actions
-- Passed: firewall function refuses invalid port
-- Passed: normal status does not print password
-- Passed: uninstall confirmation exists
-- Passed: generated env/unit smoke keeps password out of `ExecStart`
-- Passed: static check for no real secrets/endpoints
-- Passed: no forbidden detection wording check
-- Passed: `git diff --check`
-- Not run locally: ShellCheck is unavailable in PowerShell and Git Bash PATH
-- Pending: GitHub Actions ShellCheck for PR #13
+- `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh menus/private.sh modules/private/01-syncplay-server.sh modules/private/01-syncplay-server-fixed.sh`
+- Menu route review: `Main -> Private -> Syncplay Server` uses the fixed wrapper.
+- Install prompt review: `service_name`, `port`, `password`, `salt`, `isolate`,
+  `bind_mode`, and `motd` are populated before the Plan output.
+- No real secrets/endpoints committed.
+- GitHub Actions ShellCheck if configured.
 
 ## Remaining Issues
 
-- Live install/reinstall requires a real Ubuntu/Debian VPS with root access.
-- Provider firewall/security-group rules still must allow the selected TCP port.
+- Live install/reinstall still needs a real Ubuntu/Debian VPS with root after
+  this hotfix is merged.
+- Provider/security-group firewall must still allow the selected TCP port.
 
 ## Next Exact Step
 
-Run the local validation matrix, open the Syncplay Server installer PR, review
-GitHub ShellCheck, and merge only if checks pass.
+Open a small PR for the Syncplay prompt hotfix, inspect the diff and GitHub
+checks, merge only if checks pass, then ask the user to pull `main` and retry the
+Syncplay install from the normal menu.
