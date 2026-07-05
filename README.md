@@ -132,6 +132,29 @@ checks, ports, quality tests, GRE, WireGuard, Hysteria2, reverse TLS/SNI
 planning, legacy proven mode, Iran server mode, profile management, and
 synthetic WireGuard tests.
 
+For private TCP apps such as Syncplay, Manual Tunnel Lab also includes:
+
+```text
+Tunnel Manager -> Manual Tunnel Lab -> WaterWall Reverse TLS TCP Forward
+```
+
+Use `Foreign / Exit setup` on the foreign server where the private TCP app is
+listening, then use `Iran / Entry setup` on the Iran server. The managed route
+is:
+
+```text
+Iran 0.0.0.0:<entry_port> -> WaterWall Reverse TLS -> Foreign <dest_host>:<dest_port>
+```
+
+For a Syncplay server already listening on the foreign host at `127.0.0.1:5049`,
+set entry listen port `5049`, foreign destination host `127.0.0.1`, foreign
+destination port `5049`, and choose a separate tunnel control TCP port such as
+`8443`. The helper writes scoped `viptrue-waterwall-foreign-*` and
+`viptrue-waterwall-iran-*` services under
+`/etc/viptrue-waterwall-reverse-tcp`, opens UFW TCP ports only when UFW is
+active and you confirm, and archives managed files instead of hard-deleting
+them.
+
 Architecture notes:
 
 - [Tunnel Engine Registry](docs/TUNNEL_ENGINE_REGISTRY.md)

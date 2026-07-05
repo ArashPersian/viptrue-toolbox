@@ -34,6 +34,14 @@ HY2_LEGACY_SERVICE_NAME="${VIPTRUE_HYSTERIA_LEGACY_SERVICE:-hysteria-server.serv
 HY2_WG_SYNTHETIC_TMP_DIR="${VIPTRUE_HY2_WG_SYNTHETIC_TMP_DIR:-/tmp/viptrue-wg-synthetic}"
 HY2_PROMPTED_PORT=""
 HY2_WRITTEN_CONFIG=""
+WW_REV_DIR="${VIPTRUE_WATERWALL_REVERSE_DIR:-/etc/viptrue-waterwall-reverse-tcp}"
+WW_REV_PROFILE_DIR="$WW_REV_DIR/profiles"
+WW_REV_ARCHIVE_DIR="$WW_REV_DIR/archive"
+WW_REV_RELEASE_TAG="${VIPTRUE_WATERWALL_RELEASE_TAG:-v1.46.3}"
+WW_REV_RELEASE_BASE="${VIPTRUE_WATERWALL_RELEASE_BASE:-https://github.com/radkesvat/WaterWall/releases/download/$WW_REV_RELEASE_TAG}"
+WW_REV_BIN="${VIPTRUE_WATERWALL_BIN:-/usr/local/bin/waterwall}"
+WW_REV_FOREIGN_SERVICE_PREFIX="viptrue-waterwall-foreign"
+WW_REV_IRAN_SERVICE_PREFIX="viptrue-waterwall-iran"
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
@@ -832,6 +840,23 @@ yaml_double_quote() {
   escaped="${1//\\/\\\\}"
   escaped="${escaped//\"/\\\"}"
   printf '"%s"' "$escaped"
+}
+
+json_quote() {
+  local escaped="$1"
+
+  escaped="${escaped//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  escaped="${escaped//$'\r'/}"
+  escaped="${escaped//$'\n'/\\n}"
+  printf '"%s"' "$escaped"
+}
+
+valid_waterwall_host() {
+  local value="$1"
+
+  [[ -n "${value// /}" ]] || return 1
+  [[ "$value" != *[[:space:]]* && "$value" != *";"* && "$value" != *"="* ]]
 }
 
 prompt_secret_required() {
@@ -1995,7 +2020,7 @@ webtunnel|WebTunnel|TCP/web-like|tcp|normal|anti-dpi|planned/external-required|m
 obfs4|OBFS4|TCP/web-like|tcp|normal|anti-dpi|planned/external-required|medium|low|lower|obfs4proxy|no|no|no|yes|yes|yes|no|dependency-tcp-probe|not-implemented|tcp-connect|External engine candidate with lower speed expectation.
 shadowtls|ShadowTLS|TCP/web-like|tcp|normal|anti-dpi|planned|medium|medium|lower|shadow-tls|yes|no|no|yes|yes|yes|no|dependency-tcp-probe|not-implemented|tls-handshake|Planned TLS-looking helper.
 generic_tcp_forward|Generic TCP Forward|TCP/web-like|tcp|normal|generic-forward|scaffolded|medium|medium|medium|nc|no|no|no|yes|yes|yes|no|tcp-listener-probe|not-implemented|tcp-payload|Framework placeholder for a tested TCP forward engine.
-waterwall_reverse_tls|WaterWall Reverse TLS|Reverse/Iran-specific|tcp|reverse|generic-forward|priority-next/scaffolded|high|medium|lower|waterwall|yes|no|no|yes|yes|yes|no|dependency-tcp-probe|not-implemented|reverse-tls-test|Priority-next reverse engine for Iran entry constraints.
+waterwall_reverse_tls|WaterWall Reverse TLS|Reverse/Iran-specific|tcp|reverse|generic-forward|implemented/manual-lab|high|medium|lower|waterwall|yes|no|no|yes|yes|yes|no|service-listener-tcp-probe|manual-lab|reverse-tls-payload-proof|Manual Tunnel Lab helper for private TCP apps such as Syncplay: Iran entry TCP -> WaterWall Reverse TLS -> Foreign destination TCP.
 reverse_ws_proxy|Reverse WS Proxy|Reverse/Iran-specific|tcp|reverse|generic-forward|priority-next/scaffolded|high|medium|lower|external|yes|no|maybe|yes|yes|yes|no|tcp-http-probe|not-implemented|reverse-ws-test|Priority-next reverse web socket shape.
 reverse_grpc_proxy|Reverse gRPC Proxy|Reverse/Iran-specific|tcp|reverse|generic-forward|priority-next/scaffolded|high|medium|lower|external|yes|no|maybe|yes|yes|yes|no|tcp-http2-probe|not-implemented|reverse-grpc-test|Priority-next reverse HTTP/2 shape.
 xray_reverse|Xray Reverse|Reverse/Iran-specific|tcp|reverse|xray|scaffolded|high|medium|lower|xray|yes|no|maybe|yes|yes|yes|no|dependency-tcp-probe|not-implemented|xray-reverse-test|Xray reverse mode scaffold.
@@ -6526,6 +6551,1097 @@ auto_tunnel_wizard_menu() {
   done
 }
 
+waterwall_reverse_service_name() {
+  local role="$1"
+  local profile="$2"
+
+  case "$role" in
+    foreign) printf '%s-%s.service\n' "$WW_REV_FOREIGN_SERVICE_PREFIX" "$profile" ;;
+    iran) printf '%s-%s.service\n' "$WW_REV_IRAN_SERVICE_PREFIX" "$profile" ;;
+    *) return 1 ;;
+  esac
+}
+
+waterwall_reverse_role_dir() {
+  local role="$1"
+  local profile="$2"
+
+  printf '%s/%s/%s\n' "$WW_REV_PROFILE_DIR" "$profile" "$role"
+}
+
+waterwall_reverse_config_path() {
+  local role="$1"
+  local profile="$2"
+
+  printf '%s/config.json\n' "$(waterwall_reverse_role_dir "$role" "$profile")"
+}
+
+waterwall_reverse_core_path() {
+  local role="$1"
+  local profile="$2"
+
+  printf '%s/core.json\n' "$(waterwall_reverse_role_dir "$role" "$profile")"
+}
+
+waterwall_reverse_meta_path() {
+  local role="$1"
+  local profile="$2"
+
+  printf '%s/profile.meta\n' "$(waterwall_reverse_role_dir "$role" "$profile")"
+}
+
+waterwall_reverse_cert_path() {
+  local profile="$1"
+
+  printf '%s/server.crt\n' "$(waterwall_reverse_role_dir "foreign" "$profile")"
+}
+
+waterwall_reverse_key_path() {
+  local profile="$1"
+
+  printf '%s/server.key\n' "$(waterwall_reverse_role_dir "foreign" "$profile")"
+}
+
+waterwall_reverse_bin_path() {
+  if [[ -x "$WW_REV_BIN" ]]; then
+    printf '%s\n' "$WW_REV_BIN"
+  elif have_cmd waterwall; then
+    command -v waterwall
+  elif have_cmd Waterwall; then
+    command -v Waterwall
+  else
+    printf '%s\n' "$WW_REV_BIN"
+  fi
+}
+
+waterwall_reverse_asset_for_arch() {
+  local arch
+
+  if [[ -n "${VIPTRUE_WATERWALL_DOWNLOAD_URL:-}" ]]; then
+    if [[ -z "${VIPTRUE_WATERWALL_SHA256:-}" ]]; then
+      fail_line "WaterWall download override" "set VIPTRUE_WATERWALL_SHA256 for override URL verification"
+      return 1
+    fi
+    printf '%s|%s\n' "$VIPTRUE_WATERWALL_DOWNLOAD_URL" "$VIPTRUE_WATERWALL_SHA256"
+    return 0
+  fi
+
+  if [[ -n "${VIPTRUE_WATERWALL_ASSET_NAME:-}" && -n "${VIPTRUE_WATERWALL_SHA256:-}" ]]; then
+    printf '%s/%s|%s\n' "$WW_REV_RELEASE_BASE" "$VIPTRUE_WATERWALL_ASSET_NAME" "$VIPTRUE_WATERWALL_SHA256"
+    return 0
+  fi
+
+  arch="$(uname -m 2>/dev/null || printf unknown)"
+  case "$arch" in
+    x86_64|amd64)
+      printf '%s/Waterwall-linux-gcc-x64.zip|6fefbadd9834582fdcb614bdbbf9d010baf80169be3ade9779563605433c38c3\n' "$WW_REV_RELEASE_BASE"
+      ;;
+    aarch64|arm64)
+      printf '%s/Waterwall-linux-gcc-arm64.zip|487e5a65bccdeef5e4a2dea5781e6701aca0dd6a6282783c3e561e6bbbaaddb4\n' "$WW_REV_RELEASE_BASE"
+      ;;
+    *)
+      fail_line "WaterWall release asset" "unsupported architecture: $arch"
+      echo "Set VIPTRUE_WATERWALL_DOWNLOAD_URL and VIPTRUE_WATERWALL_SHA256 for a reviewed release asset."
+      return 1
+      ;;
+  esac
+}
+
+waterwall_reverse_install_download_deps() {
+  local install
+  local -a missing=()
+
+  if ! have_cmd curl && ! have_cmd wget; then
+    missing+=(curl)
+  fi
+  have_cmd unzip || missing+=(unzip)
+  have_cmd sha256sum || missing+=(coreutils)
+  have_cmd install || missing+=(coreutils)
+
+  ((${#missing[@]} == 0)) && return 0
+
+  warn_line "download dependencies missing" "${missing[*]}"
+  if ! have_cmd apt-get; then
+    fail_line "package installer" "install ${missing[*]} manually, then rerun this setup"
+    return 1
+  fi
+
+  read -r -p "Install WaterWall download dependencies now? [y/N]: " install
+  case "$install" in
+    y|Y|yes|YES)
+      apt-get update && apt-get install -y "${missing[@]}"
+      ;;
+    *)
+      fail_line "download dependencies" "required before installing WaterWall"
+      return 1
+      ;;
+  esac
+}
+
+ensure_waterwall_ready() {
+  local install_now asset url expected_sha tmp_dir zip_path extract_dir binary_path bin_path
+
+  bin_path="$(waterwall_reverse_bin_path)"
+  if [[ -x "$bin_path" ]]; then
+    pass_line "WaterWall command" "$bin_path"
+    return 0
+  fi
+
+  warn_line "WaterWall command" "not installed at $WW_REV_BIN"
+  asset="$(waterwall_reverse_asset_for_arch)" || return 1
+  url="${asset%|*}"
+  expected_sha="${asset##*|}"
+  echo "Release: $WW_REV_RELEASE_TAG"
+  echo "Asset: $url"
+  echo "SHA256: $expected_sha"
+  echo "Install path: $WW_REV_BIN"
+  echo
+  read -r -p "Download, verify, and install WaterWall now? [y/N]: " install_now
+  case "$install_now" in
+    y|Y|yes|YES) ;;
+    *)
+      fail_line "WaterWall command" "install WaterWall before creating services"
+      return 1
+      ;;
+  esac
+
+  ensure_root || return 1
+  waterwall_reverse_install_download_deps || return 1
+
+  tmp_dir="$(mktemp -d)"
+  zip_path="$tmp_dir/waterwall.zip"
+  extract_dir="$tmp_dir/extract"
+  mkdir -p "$extract_dir"
+
+  if have_cmd curl; then
+    curl -fL --retry 3 -o "$zip_path" "$url"
+  else
+    wget -O "$zip_path" "$url"
+  fi
+
+  if ! printf '%s  %s\n' "$expected_sha" "$zip_path" | sha256sum -c -; then
+    fail_line "WaterWall SHA256" "download did not match expected hash"
+    rm -rf -- "$tmp_dir"
+    return 1
+  fi
+
+  unzip -q "$zip_path" -d "$extract_dir"
+  binary_path="$(find "$extract_dir" -type f \( -name 'Waterwall' -o -name 'waterwall' \) -perm /111 -print 2>/dev/null | head -n 1)"
+  if [[ -z "$binary_path" ]]; then
+    binary_path="$(find "$extract_dir" -type f \( -name 'Waterwall' -o -name 'waterwall' \) -print 2>/dev/null | head -n 1)"
+  fi
+  if [[ -z "$binary_path" ]]; then
+    fail_line "WaterWall archive" "no Waterwall binary found in release asset"
+    rm -rf -- "$tmp_dir"
+    return 1
+  fi
+
+  install -m 0755 "$binary_path" "$WW_REV_BIN"
+  rm -rf -- "$tmp_dir"
+
+  if [[ -x "$WW_REV_BIN" ]]; then
+    pass_line "WaterWall command" "$WW_REV_BIN"
+    return 0
+  fi
+
+  fail_line "WaterWall command" "install completed but $WW_REV_BIN is not executable"
+  return 1
+}
+
+waterwall_reverse_ensure_dirs() {
+  mkdir -p "$WW_REV_PROFILE_DIR" "$WW_REV_ARCHIVE_DIR" "$HY2_SYSTEMD_SYSTEM_DIR"
+  chmod 700 "$WW_REV_DIR" "$WW_REV_PROFILE_DIR" "$WW_REV_ARCHIVE_DIR" 2>/dev/null || true
+}
+
+waterwall_reverse_write_core() {
+  local role_dir="$1"
+
+  cat > "$role_dir/core.json" <<'EOF_WW_CORE'
+{
+  "log": {
+    "path": "log/",
+    "internal": { "loglevel": "INFO", "file": "internal.log", "console": true },
+    "core":     { "loglevel": "INFO", "file": "core.log",     "console": true },
+    "network":  { "loglevel": "INFO", "file": "network.log",  "console": true },
+    "dns":      { "loglevel": "INFO", "file": "dns.log",      "console": true }
+  },
+  "configs": [
+    "config.json"
+  ],
+  "misc": {
+    "workers": 2,
+    "ram-profile": "server",
+    "mtu": 1500,
+    "try-enabling-bbr": false
+  }
+}
+EOF_WW_CORE
+  chmod 600 "$role_dir/core.json"
+}
+
+waterwall_reverse_write_foreign_config() {
+  local profile="$1"
+  local dest_host="$2"
+  local dest_port="$3"
+  local control_port="$4"
+  local sni="$5"
+  local config_path="$6"
+  local cert_path="$7"
+  local key_path="$8"
+  local name_q dest_q sni_q cert_q key_q
+
+  name_q="$(json_quote "viptrue-waterwall-foreign-$profile")"
+  dest_q="$(json_quote "$dest_host")"
+  sni_q="$(json_quote "$sni")"
+  cert_q="$(json_quote "$cert_path")"
+  key_q="$(json_quote "$key_path")"
+
+  cat > "$config_path" <<EOF_WW_FOREIGN
+{
+  "name": $name_q,
+  "nodes": [
+    {
+      "name": "control-listener",
+      "type": "TcpListener",
+      "settings": {
+        "address": "0.0.0.0",
+        "port": $control_port,
+        "nodelay": true
+      },
+      "next": "tls-server"
+    },
+    {
+      "name": "tls-server",
+      "type": "TlsServer",
+      "settings": {
+        "cert-file": $cert_q,
+        "key-file": $key_q,
+        "sni": $sni_q
+      },
+      "next": "destination-connector"
+    },
+    {
+      "name": "destination-connector",
+      "type": "TcpConnector",
+      "settings": {
+        "address": $dest_q,
+        "port": $dest_port,
+        "nodelay": true,
+        "fastopen": false
+      }
+    }
+  ]
+}
+EOF_WW_FOREIGN
+  chmod 600 "$config_path"
+}
+
+waterwall_reverse_write_iran_config() {
+  local profile="$1"
+  local entry_port="$2"
+  local foreign_host="$3"
+  local control_port="$4"
+  local sni="$5"
+  local config_path="$6"
+  local name_q host_q sni_q
+
+  name_q="$(json_quote "viptrue-waterwall-iran-$profile")"
+  host_q="$(json_quote "$foreign_host")"
+  sni_q="$(json_quote "$sni")"
+
+  cat > "$config_path" <<EOF_WW_IRAN
+{
+  "name": $name_q,
+  "nodes": [
+    {
+      "name": "entry-listener",
+      "type": "TcpListener",
+      "settings": {
+        "address": "0.0.0.0",
+        "port": $entry_port,
+        "nodelay": true
+      },
+      "next": "tls-client"
+    },
+    {
+      "name": "tls-client",
+      "type": "TlsClient",
+      "settings": {
+        "sni": $sni_q,
+        "verify": false
+      },
+      "next": "control-connector"
+    },
+    {
+      "name": "control-connector",
+      "type": "TcpConnector",
+      "settings": {
+        "address": $host_q,
+        "port": $control_port,
+        "nodelay": true,
+        "fastopen": false
+      }
+    }
+  ]
+}
+EOF_WW_IRAN
+  chmod 600 "$config_path"
+}
+
+waterwall_reverse_write_meta() {
+  local role="$1"
+  local profile="$2"
+  local entry_port="$3"
+  local foreign_host="$4"
+  local dest_host="$5"
+  local dest_port="$6"
+  local control_port="$7"
+  local sni="$8"
+  local service_name="$9"
+  local meta_path="${10}"
+
+  cat > "$meta_path" <<EOF_WW_META
+engine=waterwall_reverse_tls_tcp
+role=$role
+profile=$profile
+entry_port=$entry_port
+foreign_host=$foreign_host
+destination_host=$dest_host
+destination_port=$dest_port
+control_port=$control_port
+sni=$sni
+service_name=$service_name
+created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF_WW_META
+  chmod 600 "$meta_path"
+}
+
+waterwall_reverse_write_service() {
+  local service_name="$3"
+  local role_dir="$4"
+  local description="$5"
+  local service_path bin_path
+
+  bin_path="$(waterwall_reverse_bin_path)"
+  service_path="$HY2_SYSTEMD_SYSTEM_DIR/$service_name"
+  backup_existing_file "$service_path"
+
+  cat > "$service_path" <<EOF_WW_SERVICE
+[Unit]
+Description=$description
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$role_dir
+ExecStart=$bin_path
+Restart=always
+RestartSec=3
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF_WW_SERVICE
+
+  chmod 644 "$service_path"
+}
+
+waterwall_reverse_apply_ufw_tcp_rules() {
+  local apply port
+
+  echo
+  echo -e "${YELLOW}Firewall notes${NC}"
+  for port in "$@"; do
+    echo "  ufw allow $port/tcp"
+    echo "  provider/security-group: allow TCP $port"
+  done
+  echo
+  read -r -p "Apply UFW allow rules now if UFW is active? [y/N]: " apply
+  case "$apply" in
+    y|Y|yes|YES)
+      if ! have_cmd ufw; then
+        warn_line "UFW" "not installed; apply provider firewall rules manually"
+        return 0
+      fi
+      if ! ufw status 2>/dev/null | grep -qi '^Status: active'; then
+        warn_line "UFW" "not active; provider firewall may still need rules"
+        return 0
+      fi
+      for port in "$@"; do
+        ufw allow "$port/tcp"
+      done
+      ;;
+    *) info_line "UFW" "no firewall changes applied" ;;
+  esac
+}
+
+waterwall_reverse_stop_same_profile_service() {
+  local service_name="$1"
+  local confirm
+
+  if hy2_wg_service_active "$service_name"; then
+    warn_line "existing profile service" "$service_name is active"
+    read -r -p "Stop only $service_name before replacing this profile? [y/N]: " confirm
+    case "$confirm" in
+      y|Y|yes|YES)
+        systemctl stop "$service_name" 2>/dev/null || true
+        pass_line "same-profile service stop attempted" "$service_name"
+        ;;
+      *)
+        fail_line "same-profile service" "left active; refusing to replace this profile"
+        return 1
+        ;;
+    esac
+  fi
+}
+
+waterwall_reverse_archive_role() {
+  local role="$1"
+  local profile="$2"
+  local archive_dir="$3"
+  local service_name service_path role_dir path
+  local -a paths=()
+
+  service_name="$(waterwall_reverse_service_name "$role" "$profile")"
+  service_path="$HY2_SYSTEMD_SYSTEM_DIR/$service_name"
+  role_dir="$(waterwall_reverse_role_dir "$role" "$profile")"
+  paths+=("$role_dir/config.json" "$role_dir/core.json" "$role_dir/profile.meta" "$service_path")
+  if [[ "$role" == "foreign" ]]; then
+    paths+=("$role_dir/server.crt" "$role_dir/server.key")
+  fi
+
+  for path in "${paths[@]}"; do
+    hy2_wg_archive_existing_path "$path" "$archive_dir"
+  done
+}
+
+waterwall_reverse_meta_value() {
+  local meta_path="$1"
+  local key="$2"
+
+  sed -nE "s/^${key}=(.*)$/\1/p" "$meta_path" 2>/dev/null | head -n 1
+}
+
+waterwall_reverse_check_destination_listener() {
+  local host="$1"
+  local port="$2"
+
+  case "$host" in
+    127.0.0.1|localhost|0.0.0.0|::1)
+      check_local_listener tcp "$port"
+      ;;
+    *)
+      if have_cmd nc; then
+        if nc -z -w 2 "$host" "$port" >/dev/null 2>&1; then
+          pass_line "foreign destination TCP listener" "$host:$port reachable from this host"
+        else
+          warn_line "foreign destination TCP listener" "$host:$port not reachable from this host"
+        fi
+      else
+        warn_line "foreign destination TCP listener" "install netcat/nc or run: nc -z -w 2 $host $port"
+      fi
+      ;;
+  esac
+}
+
+WW_PLAN_ENTRY_PORT=""
+WW_PLAN_FOREIGN_HOST=""
+WW_PLAN_DEST_HOST=""
+WW_PLAN_DEST_PORT=""
+WW_PLAN_CONTROL_PORT=""
+WW_PLAN_SNI=""
+WW_PLAN_PROFILE=""
+
+waterwall_reverse_prompt_plan() {
+  WW_PLAN_ENTRY_PORT="$(prompt_default "Entry listen port" "5049")"
+  if ! valid_port "$WW_PLAN_ENTRY_PORT"; then
+    fail_line "entry listen port" "ports must be 1-65535"
+    return 1
+  fi
+
+  WW_PLAN_FOREIGN_HOST="$(prompt_default "Foreign public IP/domain" "FOREIGN_PUBLIC_IP_OR_DOMAIN")"
+  if ! valid_waterwall_host "$WW_PLAN_FOREIGN_HOST"; then
+    fail_line "foreign public IP/domain" "must be non-empty and contain no spaces, semicolons, or equals signs"
+    return 1
+  fi
+
+  WW_PLAN_DEST_HOST="$(prompt_default "Foreign destination host" "127.0.0.1")"
+  if ! valid_waterwall_host "$WW_PLAN_DEST_HOST"; then
+    fail_line "foreign destination host" "must be non-empty and contain no spaces, semicolons, or equals signs"
+    return 1
+  fi
+
+  WW_PLAN_DEST_PORT="$(prompt_default "Foreign destination port" "$WW_PLAN_ENTRY_PORT")"
+  if ! valid_port "$WW_PLAN_DEST_PORT"; then
+    fail_line "foreign destination port" "ports must be 1-65535"
+    return 1
+  fi
+
+  WW_PLAN_CONTROL_PORT="$(prompt_default "Tunnel control port" "8443")"
+  if ! valid_port "$WW_PLAN_CONTROL_PORT"; then
+    fail_line "tunnel control port" "ports must be 1-65535"
+    return 1
+  fi
+
+  WW_PLAN_SNI="$(prompt_default "SNI" "waterwall.local")"
+  if ! valid_waterwall_host "$WW_PLAN_SNI"; then
+    fail_line "SNI" "must be non-empty and contain no spaces, semicolons, or equals signs"
+    return 1
+  fi
+
+  WW_PLAN_PROFILE="$(prompt_default "Profile name" "syncplay-$WW_PLAN_ENTRY_PORT")"
+  if ! valid_profile_name "$WW_PLAN_PROFILE"; then
+    fail_line "profile name" "use 1-32 letters, numbers, dot, underscore, or dash"
+    return 1
+  fi
+}
+
+waterwall_reverse_setup_foreign() {
+  local profile role_dir config_path core_path meta_path cert_path key_path service_name
+  local confirm start_now stamp archive_dir listener_output bundle bundle_path
+
+  title
+  echo -e "${CYAN}WaterWall Reverse TLS TCP Forward > Foreign / Exit setup${NC}"
+  line
+  echo
+
+  waterwall_reverse_prompt_plan || { pause; return; }
+  profile="$WW_PLAN_PROFILE"
+  role_dir="$(waterwall_reverse_role_dir "foreign" "$profile")"
+  config_path="$(waterwall_reverse_config_path "foreign" "$profile")"
+  core_path="$(waterwall_reverse_core_path "foreign" "$profile")"
+  meta_path="$(waterwall_reverse_meta_path "foreign" "$profile")"
+  cert_path="$(waterwall_reverse_cert_path "$profile")"
+  key_path="$(waterwall_reverse_key_path "$profile")"
+  service_name="$(waterwall_reverse_service_name "foreign" "$profile")"
+
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  echo "Route: Iran 0.0.0.0:$WW_PLAN_ENTRY_PORT -> WaterWall Reverse TLS -> Foreign $WW_PLAN_DEST_HOST:$WW_PLAN_DEST_PORT"
+  echo "Foreign control listener: 0.0.0.0:$WW_PLAN_CONTROL_PORT/tcp"
+  echo "SNI: $WW_PLAN_SNI"
+  echo "Profile: $profile"
+  echo "Config: $config_path"
+  echo "Core: $core_path"
+  echo "Service: $service_name"
+  echo "TLS cert/key: $cert_path / $key_path"
+  echo "Existing managed files for this role will be archived before replacement."
+  echo "Only the same profile service may be stopped, after confirmation."
+  echo
+  waterwall_reverse_check_destination_listener "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT"
+  echo
+  read -r -p "Create/replace the Foreign WaterWall profile now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info_line "Foreign WaterWall setup" "cancelled before writing files"
+      pause
+      return
+      ;;
+  esac
+
+  ensure_root || { pause; return; }
+  require_cmd systemctl systemd || { pause; return; }
+  ensure_waterwall_ready || { pause; return; }
+  require_cmd openssl openssl || { pause; return; }
+  waterwall_reverse_ensure_dirs
+
+  waterwall_reverse_stop_same_profile_service "$service_name" || { pause; return; }
+  listener_output="$(list_listeners tcp "$WW_PLAN_CONTROL_PORT")"
+  if [[ -n "$listener_output" ]]; then
+    fail_line "tunnel control port $WW_PLAN_CONTROL_PORT" "already listening locally; refusing to stop unrelated service"
+    printf '%s\n' "$listener_output"
+    pause
+    return
+  fi
+
+  stamp="$(date +%Y%m%d-%H%M%S)-waterwall-foreign-$profile"
+  archive_dir="$WW_REV_ARCHIVE_DIR/$stamp"
+  mkdir -p "$archive_dir" "$role_dir"
+  chmod 700 "$archive_dir" "$role_dir" 2>/dev/null || true
+  waterwall_reverse_archive_role "foreign" "$profile" "$archive_dir"
+
+  hy2_wg_generate_self_signed_cert "$cert_path" "$key_path" "$WW_PLAN_SNI" || { pause; return; }
+  waterwall_reverse_write_core "$role_dir"
+  waterwall_reverse_write_foreign_config "$profile" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$config_path" "$cert_path" "$key_path"
+  waterwall_reverse_write_meta "foreign" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path"
+  waterwall_reverse_write_service "foreign" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP foreign exit $profile"
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  waterwall_reverse_apply_ufw_tcp_rules "$WW_PLAN_CONTROL_PORT"
+
+  echo
+  line
+  echo -e "${CYAN}Foreign Post-Setup Tests${NC}"
+  if hy2_wg_service_active "$service_name"; then
+    pass_line "$service_name" "active"
+  else
+    warn_line "$service_name" "not active or not started"
+  fi
+  check_local_listener tcp "$WW_PLAN_CONTROL_PORT"
+  waterwall_reverse_check_destination_listener "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT"
+
+  bundle="VIPTRUE_WATERWALL_REVERSE_TCP=v1;profile=$profile;entry_port=$WW_PLAN_ENTRY_PORT;foreign_host=$WW_PLAN_FOREIGN_HOST;dest_host=$WW_PLAN_DEST_HOST;dest_port=$WW_PLAN_DEST_PORT;control_port=$WW_PLAN_CONTROL_PORT;sni=$WW_PLAN_SNI"
+  bundle_path="$(hy2_expert_save_bundle_file "waterwall" "$profile" "$bundle")"
+  echo
+  echo "Use these exact values on Iran / Entry setup:"
+  echo "$bundle"
+  echo "Saved no-secret bundle: $bundle_path"
+  echo "Rollback archive: $archive_dir"
+
+  set_summary \
+    "WaterWall foreign exit config, TLS cert/key, systemd service, firewall note, control listener, and destination listener." \
+    "If traffic fails, likely blockers are control TCP firewall, SNI mismatch, or missing foreign destination listener." \
+    "Run Iran / Entry setup with the printed values, then run profile tests from both servers." \
+    "Maybe: provider firewall or destination app service may need action."
+  print_summary
+  pause
+}
+
+waterwall_reverse_setup_iran() {
+  local profile role_dir config_path core_path meta_path service_name confirm start_now stamp archive_dir listener_output endpoint
+
+  title
+  echo -e "${CYAN}WaterWall Reverse TLS TCP Forward > Iran / Entry setup${NC}"
+  line
+  echo
+
+  waterwall_reverse_prompt_plan || { pause; return; }
+  profile="$WW_PLAN_PROFILE"
+  role_dir="$(waterwall_reverse_role_dir "iran" "$profile")"
+  config_path="$(waterwall_reverse_config_path "iran" "$profile")"
+  core_path="$(waterwall_reverse_core_path "iran" "$profile")"
+  meta_path="$(waterwall_reverse_meta_path "iran" "$profile")"
+  service_name="$(waterwall_reverse_service_name "iran" "$profile")"
+
+  echo
+  echo -e "${YELLOW}Plan${NC}"
+  echo "Route: Iran 0.0.0.0:$WW_PLAN_ENTRY_PORT -> WaterWall Reverse TLS -> Foreign $WW_PLAN_DEST_HOST:$WW_PLAN_DEST_PORT"
+  echo "Foreign control endpoint: $WW_PLAN_FOREIGN_HOST:$WW_PLAN_CONTROL_PORT/tcp"
+  echo "SNI: $WW_PLAN_SNI"
+  echo "Profile: $profile"
+  echo "Config: $config_path"
+  echo "Core: $core_path"
+  echo "Service: $service_name"
+  echo "Existing managed files for this role will be archived before replacement."
+  echo "Only the same profile service may be stopped, after confirmation."
+  echo
+  read -r -p "Create/replace the Iran WaterWall profile now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info_line "Iran WaterWall setup" "cancelled before writing files"
+      pause
+      return
+      ;;
+  esac
+
+  ensure_root || { pause; return; }
+  require_cmd systemctl systemd || { pause; return; }
+  ensure_waterwall_ready || { pause; return; }
+  waterwall_reverse_ensure_dirs
+
+  waterwall_reverse_stop_same_profile_service "$service_name" || { pause; return; }
+  listener_output="$(list_listeners tcp "$WW_PLAN_ENTRY_PORT")"
+  if [[ -n "$listener_output" ]]; then
+    fail_line "entry listen port $WW_PLAN_ENTRY_PORT" "already listening locally; refusing to stop unrelated service"
+    printf '%s\n' "$listener_output"
+    pause
+    return
+  fi
+
+  stamp="$(date +%Y%m%d-%H%M%S)-waterwall-iran-$profile"
+  archive_dir="$WW_REV_ARCHIVE_DIR/$stamp"
+  mkdir -p "$archive_dir" "$role_dir"
+  chmod 700 "$archive_dir" "$role_dir" 2>/dev/null || true
+  waterwall_reverse_archive_role "iran" "$profile" "$archive_dir"
+
+  waterwall_reverse_write_core "$role_dir"
+  waterwall_reverse_write_iran_config "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$config_path"
+  waterwall_reverse_write_meta "iran" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path"
+  waterwall_reverse_write_service "iran" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP Iran entry $profile"
+
+  start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
+  hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
+  waterwall_reverse_apply_ufw_tcp_rules "$WW_PLAN_ENTRY_PORT"
+
+  echo
+  line
+  echo -e "${CYAN}Iran Post-Setup Tests${NC}"
+  if hy2_wg_service_active "$service_name"; then
+    pass_line "$service_name" "active"
+  else
+    warn_line "$service_name" "not active or not started"
+  fi
+  check_local_listener tcp "$WW_PLAN_ENTRY_PORT"
+  endpoint="$(detect_public_ip):$WW_PLAN_ENTRY_PORT"
+  echo
+  echo "Client endpoint for the private TCP app: $endpoint"
+  echo "Rollback archive: $archive_dir"
+
+  set_summary \
+    "WaterWall Iran entry config, systemd service, firewall note, and local TCP entry listener." \
+    "If traffic fails, likely blockers are entry TCP firewall, foreign control TCP firewall, or SNI mismatch." \
+    "Connect the client to the Iran public endpoint and run profile tests from both servers." \
+    "Maybe: provider firewall on Iran or Foreign may need action."
+  print_summary
+  pause
+}
+
+WW_PROFILE_NAMES=()
+WW_PROFILE_ROLES=()
+WW_PROFILE_META_PATHS=()
+WW_PROFILE_SERVICES=()
+WW_PROFILE_ENTRY_PORTS=()
+WW_PROFILE_FOREIGN_HOSTS=()
+WW_PROFILE_DESTINATIONS=()
+WW_PROFILE_CONTROL_PORTS=()
+WW_PROFILE_SNIS=()
+
+WW_SELECTED_NAME=""
+WW_SELECTED_ROLE=""
+WW_SELECTED_META_PATH=""
+WW_SELECTED_SERVICE=""
+WW_SELECTED_ENTRY_PORT=""
+WW_SELECTED_FOREIGN_HOST=""
+WW_SELECTED_DESTINATION=""
+WW_SELECTED_CONTROL_PORT=""
+WW_SELECTED_SNI=""
+
+waterwall_reverse_collect_profiles() {
+  local meta_path profile role service entry_port foreign_host dest_host dest_port control_port sni destination
+
+  WW_PROFILE_NAMES=()
+  WW_PROFILE_ROLES=()
+  WW_PROFILE_META_PATHS=()
+  WW_PROFILE_SERVICES=()
+  WW_PROFILE_ENTRY_PORTS=()
+  WW_PROFILE_FOREIGN_HOSTS=()
+  WW_PROFILE_DESTINATIONS=()
+  WW_PROFILE_CONTROL_PORTS=()
+  WW_PROFILE_SNIS=()
+
+  [[ -d "$WW_REV_PROFILE_DIR" ]] || return 0
+  while IFS= read -r -d '' meta_path; do
+    profile="$(waterwall_reverse_meta_value "$meta_path" "profile")"
+    role="$(waterwall_reverse_meta_value "$meta_path" "role")"
+    [[ -n "$profile" && -n "$role" ]] || continue
+    service="$(waterwall_reverse_meta_value "$meta_path" "service_name")"
+    service="${service:-$(waterwall_reverse_service_name "$role" "$profile")}"
+    entry_port="$(waterwall_reverse_meta_value "$meta_path" "entry_port")"
+    foreign_host="$(waterwall_reverse_meta_value "$meta_path" "foreign_host")"
+    dest_host="$(waterwall_reverse_meta_value "$meta_path" "destination_host")"
+    dest_port="$(waterwall_reverse_meta_value "$meta_path" "destination_port")"
+    control_port="$(waterwall_reverse_meta_value "$meta_path" "control_port")"
+    sni="$(waterwall_reverse_meta_value "$meta_path" "sni")"
+    destination="${dest_host:-unknown}:${dest_port:-unknown}"
+
+    WW_PROFILE_NAMES+=("$profile")
+    WW_PROFILE_ROLES+=("$role")
+    WW_PROFILE_META_PATHS+=("$meta_path")
+    WW_PROFILE_SERVICES+=("$service")
+    WW_PROFILE_ENTRY_PORTS+=("${entry_port:-unknown}")
+    WW_PROFILE_FOREIGN_HOSTS+=("${foreign_host:-unknown}")
+    WW_PROFILE_DESTINATIONS+=("$destination")
+    WW_PROFILE_CONTROL_PORTS+=("${control_port:-unknown}")
+    WW_PROFILE_SNIS+=("${sni:-unknown}")
+  done < <(find "$WW_REV_PROFILE_DIR" -mindepth 3 -maxdepth 3 -type f -name 'profile.meta' -print0 2>/dev/null | sort -z)
+}
+
+waterwall_reverse_list_profiles() {
+  local i count service_status endpoint
+
+  waterwall_reverse_collect_profiles
+  count="${#WW_PROFILE_NAMES[@]}"
+  if ((count == 0)); then
+    warn_line "WaterWall profiles" "none found under $WW_REV_PROFILE_DIR"
+    return 1
+  fi
+
+  for ((i = 0; i < count; i++)); do
+    service_status="$(hy2_wg_service_status_text "${WW_PROFILE_SERVICES[$i]}")"
+    if [[ "${WW_PROFILE_ROLES[$i]}" == "iran" ]]; then
+      endpoint="Iran public IP:${WW_PROFILE_ENTRY_PORTS[$i]}"
+    else
+      endpoint="${WW_PROFILE_FOREIGN_HOSTS[$i]}:${WW_PROFILE_CONTROL_PORTS[$i]}"
+    fi
+    printf '%2s. %-16s role=%-7s entry=%-8s control=%-8s status=%s\n' \
+      "$((i + 1))" "${WW_PROFILE_NAMES[$i]}" "${WW_PROFILE_ROLES[$i]}" \
+      "${WW_PROFILE_ENTRY_PORTS[$i]}" "${WW_PROFILE_CONTROL_PORTS[$i]}" "$service_status"
+    printf '    foreign: %-24s destination: %s\n' "${WW_PROFILE_FOREIGN_HOSTS[$i]}" "${WW_PROFILE_DESTINATIONS[$i]}"
+    printf '    service: %-34s sni: %s\n' "${WW_PROFILE_SERVICES[$i]}" "${WW_PROFILE_SNIS[$i]}"
+    printf '    endpoint/control hint: %s\n' "$endpoint"
+  done
+}
+
+waterwall_reverse_select_profile() {
+  local selected count
+
+  waterwall_reverse_list_profiles || return 1
+  count="${#WW_PROFILE_NAMES[@]}"
+  echo
+  read -r -p "Select WaterWall profile [1-$count]: " selected
+  if ! [[ "$selected" =~ ^[0-9]+$ ]] || ((selected < 1 || selected > count)); then
+    fail_line "profile selection" "invalid selection"
+    return 1
+  fi
+
+  selected=$((selected - 1))
+  WW_SELECTED_NAME="${WW_PROFILE_NAMES[$selected]}"
+  WW_SELECTED_ROLE="${WW_PROFILE_ROLES[$selected]}"
+  WW_SELECTED_META_PATH="${WW_PROFILE_META_PATHS[$selected]}"
+  WW_SELECTED_SERVICE="${WW_PROFILE_SERVICES[$selected]}"
+  WW_SELECTED_ENTRY_PORT="${WW_PROFILE_ENTRY_PORTS[$selected]}"
+  WW_SELECTED_FOREIGN_HOST="${WW_PROFILE_FOREIGN_HOSTS[$selected]}"
+  WW_SELECTED_DESTINATION="${WW_PROFILE_DESTINATIONS[$selected]}"
+  WW_SELECTED_CONTROL_PORT="${WW_PROFILE_CONTROL_PORTS[$selected]}"
+  WW_SELECTED_SNI="${WW_PROFILE_SNIS[$selected]}"
+}
+
+waterwall_reverse_sanitize_config() {
+  local config_path="$1"
+
+  sed -E \
+    -e 's/("reverse-secret"[[:space:]]*:[[:space:]]*)"[^"]*"/\1"<hidden>"/' \
+    -e 's/("password"[[:space:]]*:[[:space:]]*)"[^"]*"/\1"<hidden>"/' \
+    "$config_path" 2>/dev/null
+}
+
+waterwall_reverse_show_profile_details() {
+  local role_dir config_path core_path cert_path key_path
+
+  waterwall_reverse_select_profile || { pause; return; }
+  role_dir="$(waterwall_reverse_role_dir "$WW_SELECTED_ROLE" "$WW_SELECTED_NAME")"
+  config_path="$role_dir/config.json"
+  core_path="$role_dir/core.json"
+  cert_path="$role_dir/server.crt"
+  key_path="$role_dir/server.key"
+
+  echo
+  line
+  echo -e "${CYAN}WaterWall Profile Details${NC}"
+  echo "Profile: $WW_SELECTED_NAME"
+  echo "Role: $WW_SELECTED_ROLE"
+  echo "Entry port: $WW_SELECTED_ENTRY_PORT/tcp"
+  echo "Foreign control: $WW_SELECTED_FOREIGN_HOST:$WW_SELECTED_CONTROL_PORT/tcp"
+  echo "Destination: $WW_SELECTED_DESTINATION"
+  echo "SNI: $WW_SELECTED_SNI"
+  echo "Service: $WW_SELECTED_SERVICE ($(hy2_wg_service_status_text "$WW_SELECTED_SERVICE"))"
+  echo "Config: $config_path"
+  echo "Core: $core_path"
+  if [[ "$WW_SELECTED_ROLE" == "foreign" ]]; then
+    echo "Cert path: $cert_path"
+    echo "Key path: $key_path"
+  fi
+  echo
+  echo -e "${YELLOW}Config preview${NC}"
+  waterwall_reverse_sanitize_config "$config_path"
+  pause
+}
+
+waterwall_reverse_status_profile() {
+  local role_dir port_to_check
+
+  waterwall_reverse_select_profile || { pause; return; }
+  role_dir="$(waterwall_reverse_role_dir "$WW_SELECTED_ROLE" "$WW_SELECTED_NAME")"
+  echo
+  line
+  echo -e "${CYAN}WaterWall Profile Status${NC}"
+  if have_cmd systemctl; then
+    systemctl status "$WW_SELECTED_SERVICE" --no-pager -l 2>/dev/null || true
+  else
+    warn_line "systemctl" "not available"
+  fi
+  echo
+  if [[ "$WW_SELECTED_ROLE" == "foreign" ]]; then
+    port_to_check="$WW_SELECTED_CONTROL_PORT"
+    check_local_listener tcp "$port_to_check"
+    waterwall_reverse_check_destination_listener "${WW_SELECTED_DESTINATION%:*}" "${WW_SELECTED_DESTINATION##*:}"
+  else
+    port_to_check="$WW_SELECTED_ENTRY_PORT"
+    check_local_listener tcp "$port_to_check"
+  fi
+  echo "Working directory: $role_dir"
+  pause
+}
+
+waterwall_reverse_logs_profile() {
+  waterwall_reverse_select_profile || { pause; return; }
+  if ! have_cmd journalctl; then
+    fail_line "journalctl" "not available"
+    pause
+    return
+  fi
+  journalctl -u "$WW_SELECTED_SERVICE" -n 80 --no-pager 2>/dev/null || true
+  pause
+}
+
+waterwall_reverse_restart_profile() {
+  waterwall_reverse_select_profile || { pause; return; }
+  ensure_root || { pause; return; }
+  require_cmd systemctl systemd || { pause; return; }
+  systemctl restart "$WW_SELECTED_SERVICE"
+  sleep 1
+  if hy2_wg_service_active "$WW_SELECTED_SERVICE"; then
+    pass_line "$WW_SELECTED_SERVICE" "restarted and active"
+  else
+    fail_line "$WW_SELECTED_SERVICE" "restart attempted but service is not active"
+  fi
+  pause
+}
+
+waterwall_reverse_delete_profile() {
+  local confirm role_dir service_path archive_dir stamp path
+  local -a paths=()
+
+  waterwall_reverse_select_profile || { pause; return; }
+  role_dir="$(waterwall_reverse_role_dir "$WW_SELECTED_ROLE" "$WW_SELECTED_NAME")"
+  service_path="$HY2_SYSTEMD_SYSTEM_DIR/$WW_SELECTED_SERVICE"
+
+  echo
+  warn_line "archive-only delete" "this moves managed files to an archive; it does not hard-delete them"
+  echo "Profile: $WW_SELECTED_NAME"
+  echo "Role: $WW_SELECTED_ROLE"
+  echo "Service: $WW_SELECTED_SERVICE"
+  echo "Directory: $role_dir"
+  read -r -p "Type DELETE to archive this WaterWall profile role: " confirm
+  if [[ "$confirm" != "DELETE" ]]; then
+    info_line "delete profile" "cancelled"
+    pause
+    return
+  fi
+
+  ensure_root || { pause; return; }
+  require_cmd systemctl systemd || { pause; return; }
+  systemctl stop "$WW_SELECTED_SERVICE" 2>/dev/null || true
+  systemctl disable "$WW_SELECTED_SERVICE" 2>/dev/null || true
+
+  stamp="$(date +%Y%m%d-%H%M%S)-waterwall-delete-$WW_SELECTED_NAME-$WW_SELECTED_ROLE"
+  archive_dir="$WW_REV_ARCHIVE_DIR/$stamp"
+  mkdir -p "$archive_dir"
+  chmod 700 "$archive_dir" 2>/dev/null || true
+
+  paths+=("$role_dir/config.json" "$role_dir/core.json" "$role_dir/profile.meta" "$service_path")
+  if [[ "$WW_SELECTED_ROLE" == "foreign" ]]; then
+    paths+=("$role_dir/server.crt" "$role_dir/server.key")
+  fi
+  for path in "${paths[@]}"; do
+    hy2_wg_archive_existing_path "$path" "$archive_dir"
+  done
+  systemctl daemon-reload
+
+  pass_line "profile archived" "$archive_dir"
+  echo "Rollback: move files from the archive back to their original paths and run systemctl daemon-reload."
+  pause
+}
+
+waterwall_reverse_run_profile_tests() {
+  local dest_host dest_port marker send_probe watch_command
+
+  waterwall_reverse_select_profile || { pause; return; }
+  echo
+  line
+  echo -e "${CYAN}WaterWall Reverse TLS TCP Tests${NC}"
+  if hy2_wg_service_active "$WW_SELECTED_SERVICE"; then
+    pass_line "$WW_SELECTED_SERVICE" "active"
+  else
+    warn_line "$WW_SELECTED_SERVICE" "not active"
+  fi
+
+  dest_host="${WW_SELECTED_DESTINATION%:*}"
+  dest_port="${WW_SELECTED_DESTINATION##*:}"
+  if [[ "$WW_SELECTED_ROLE" == "foreign" ]]; then
+    check_local_listener tcp "$WW_SELECTED_CONTROL_PORT"
+    waterwall_reverse_check_destination_listener "$dest_host" "$dest_port"
+    echo
+    echo -e "${YELLOW}Payload proof watcher${NC}"
+    watch_command="timeout 45 tcpdump -ni any tcp port $dest_port"
+    if have_cmd tcpdump; then
+      echo "Run while sending the Iran probe:"
+      echo "  $watch_command"
+    else
+      warn_line "tcpdump" "install tcpdump or use an app log on the destination to prove payload arrival"
+    fi
+  else
+    check_local_listener tcp "$WW_SELECTED_ENTRY_PORT"
+    echo
+    echo -e "${YELLOW}TCP payload probe${NC}"
+    echo "This sends one short TCP payload to the local Iran entry port. Watch the Foreign destination with tcpdump or app logs."
+    read -r -p "Send one payload probe to 127.0.0.1:$WW_SELECTED_ENTRY_PORT now? [y/N]: " send_probe
+    case "$send_probe" in
+      y|Y|yes|YES)
+        if ! have_cmd nc; then
+          fail_line "nc" "install netcat-openbsd or similar to send a TCP payload probe"
+        else
+          marker="viptrue-waterwall-test-$(date +%s)"
+          if have_cmd timeout; then
+            if printf '%s\n' "$marker" | timeout 5 nc -w 2 127.0.0.1 "$WW_SELECTED_ENTRY_PORT" >/dev/null 2>&1; then
+              pass_line "TCP payload probe" "sent marker through Iran entry: $marker"
+            else
+              warn_line "TCP payload probe" "nc did not complete cleanly; check foreign watcher/app logs"
+            fi
+          elif printf '%s\n' "$marker" | nc -w 2 127.0.0.1 "$WW_SELECTED_ENTRY_PORT" >/dev/null 2>&1; then
+            pass_line "TCP payload probe" "sent marker through Iran entry: $marker"
+          else
+            warn_line "TCP payload probe" "nc did not complete cleanly; check foreign watcher/app logs"
+          fi
+        fi
+        ;;
+      *) info_line "TCP payload probe" "skipped" ;;
+    esac
+    echo
+    echo "Foreign proof command:"
+    echo "  timeout 45 tcpdump -ni any tcp port $dest_port"
+  fi
+
+  set_summary \
+    "WaterWall service status, local listener checks, destination listener checks, and TCP payload proof commands." \
+    "A failed listener or missing destination app is the most likely blocker." \
+    "Run the Foreign watcher and Iran payload probe together for end-to-end proof." \
+    "Maybe: service restart, app listener, or TCP firewall/provider rules may need action."
+  print_summary
+  pause
+}
+
+waterwall_reverse_tcp_menu() {
+  local choice
+
+  while true; do
+    title
+    echo -e "${CYAN}WaterWall Reverse TLS TCP Forward${NC}"
+    line
+    echo
+    echo "1. Foreign / Exit setup"
+    echo "2. Iran / Entry setup"
+    echo "3. List profiles"
+    echo "4. Show profile details"
+    echo "5. Status"
+    echo "6. Logs"
+    echo "7. Restart"
+    echo "8. Run tests / proof commands"
+    echo "9. Delete profile"
+    echo "10. Back"
+    echo
+    read -r -p "Enter your choice [1-10]: " choice
+
+    case "$choice" in
+      1) waterwall_reverse_setup_foreign ;;
+      2) waterwall_reverse_setup_iran ;;
+      3) waterwall_reverse_list_profiles || true; pause ;;
+      4) waterwall_reverse_show_profile_details ;;
+      5) waterwall_reverse_status_profile ;;
+      6) waterwall_reverse_logs_profile ;;
+      7) waterwall_reverse_restart_profile ;;
+      8) waterwall_reverse_run_profile_tests ;;
+      9) waterwall_reverse_delete_profile ;;
+      10) break ;;
+      *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 manual_tunnel_lab_menu() {
   while true; do
     title
@@ -6545,9 +7661,10 @@ manual_tunnel_lab_menu() {
     echo "11. Manage Existing Hysteria2 WireGuard Forwards"
     echo "12. Synthetic WireGuard Handshake Test"
     echo "13. UDP-only fallback probe"
-    echo "14. Back"
+    echo "14. WaterWall Reverse TLS TCP Forward"
+    echo "15. Back"
     echo
-    read -r -p "Enter your choice [1-14]: " choice
+    read -r -p "Enter your choice [1-15]: " choice
 
     case "$choice" in
       1) preflight_checks ;;
@@ -6563,7 +7680,8 @@ manual_tunnel_lab_menu() {
       11) hy2_wg_manage_existing_menu ;;
       12) hy2_wg_synthetic_menu ;;
       13) hy2_wg_synthetic_udp_probe_menu ;;
-      14) break ;;
+      14) waterwall_reverse_tcp_menu ;;
+      15) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
   done
