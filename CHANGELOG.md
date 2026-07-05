@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.5 - Unreleased
+
+- Added `Tunnel Manager -> Manual Tunnel Lab -> WaterWall Reverse TLS TCP
+  Forward` for private TCP apps such as Syncplay.
+- Added Foreign / Exit and Iran / Entry setup flows that generate managed
+  WaterWall `core.json`, `config.json`, self-signed TLS material on Foreign,
+  and scoped systemd services without stopping unrelated tunnels.
+- Added managed WaterWall profile list, details, status, logs, restart,
+  archive-only delete, TCP listener checks, UFW-active TCP rule prompts, and
+  payload proof commands.
+- Promoted the WaterWall Reverse TLS engine registry entry from scaffolded to
+  implemented/manual-lab.
+
 ## 0.4.4 - Unreleased
 
 - Fixed the Syncplay install prompt value handoff so `service_name` is set before

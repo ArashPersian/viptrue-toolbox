@@ -11,9 +11,10 @@ data files on the server.
   TUIC, MASQUE, AmneziaWG, and UDP wrappers are registered for later work.
 - TCP / web-like: REALITY, XHTTP, gRPC, WebTunnel, NaiveProxy, OBFS4,
   ShadowTLS, and generic TCP forward are scaffolded or planned.
-- Reverse / Iran-specific: WaterWall Reverse TLS, reverse WS/gRPC, Xray reverse,
-  reverse SSH, Chisel, GOST, and FRP/Rathole are registered as next-stage
-  reverse candidates.
+- Reverse / Iran-specific: WaterWall Reverse TLS is available through Manual
+  Tunnel Lab for private TCP forwarding. Reverse WS/gRPC, Xray reverse, reverse
+  SSH, Chisel, GOST, and FRP/Rathole remain registered as next-stage reverse
+  candidates.
 - CDN / clean-IP / operator-specific: Cloudflare, ArvanCloud, and IPv6 bypass
   entries are marked ISP-specific where appropriate.
 - DNS / emergency hard-mode: DNSTT, Slipstream DNS, Iodine, dns2tcp, DoH, DoT,
@@ -101,9 +102,8 @@ available.
 ## Next Implementation Order
 
 1. Hysteria2 generic UDP forward polish
-2. WaterWall Reverse TLS
-3. Reverse WS/gRPC
-4. Generic TCP forward via tested engine
-5. Cloudflare/CDN scan helpers
-6. DNS hard-mode research/scaffold
-7. spoof/desync helper research
+2. Reverse WS/gRPC
+3. Generic TCP forward via tested engine
+4. Cloudflare/CDN scan helpers
+5. DNS hard-mode research/scaffold
+6. spoof/desync helper research

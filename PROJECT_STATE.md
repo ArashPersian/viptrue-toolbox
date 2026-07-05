@@ -1,49 +1,62 @@
 # Project State
 
-Version: 0.4.4
-Branch: fasttrack/fix-syncplay-install-prompt
-Base commit: 5ebaa17 Merge pull request #13 from ArashPersian/fasttrack/private-syncplay-server
+Version: 0.4.5
+Branch: fasttrack/waterwall-reverse-tcp-forward
+Base commit: d47d0b4 Merge pull request #14 from ArashPersian/fasttrack/fix-syncplay-install-prompt
 Commit: pending PR branch
-PR status: preparing Syncplay install prompt hotfix
+PR status: preparing WaterWall Reverse TLS TCP helper
 Release status: no release, tag, or deploy planned for this batch
 
 ## Scope
 
-- Fix `Private -> Syncplay Server -> Install / Reinstall` crashing before the
-  install confirmation with `service_name: unbound variable`.
-- Preserve the existing Syncplay manager behavior while routing the Private menu
-  through a small hotfix wrapper.
-- Avoid using Codex for this small patch unless GitHub checks fail or deeper
-  refactor is needed.
+- Add `Tunnel Manager -> Manual Tunnel Lab -> WaterWall Reverse TLS TCP Forward`.
+- Support Foreign / Exit setup and Iran / Entry setup for private TCP apps.
+- Generate managed WaterWall configs, `core.json`, systemd services, Foreign
+  self-signed TLS material, and UFW-active TCP prompts.
+- Add managed profile list, details, status, logs, restart, archive-only delete,
+  and test/proof-command actions.
+- Preserve safety constraints: no unrelated tunnel stops, no hard deletion, no
+  real secrets or production endpoint configs in the repo.
 
-## Root Cause
+## Route
 
-- `prompt_install_config` used local variable names that matched the output
-  variable names passed by `install_or_reinstall_syncplay`.
-- With Bash local scoping and `printf -v`, the caller's `service_name` stayed
-  unset.
-- Because the script runs with `set -u`, printing the install Plan failed before
-  any root/install action started.
+```text
+Iran 0.0.0.0:<entry_port> -> WaterWall Reverse TLS -> Foreign <dest_host>:<dest_port>
+```
+
+Syncplay-shaped example:
+
+```text
+Iran public IP:5049 -> Foreign 127.0.0.1:5049
+```
+
+Use a separate tunnel control TCP port, for example `8443`, between Iran and
+Foreign.
 
 ## Checks
 
-Planned checks before asking for user VPS testing:
+Planned checks before merge:
 
-- `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh menus/private.sh modules/private/01-syncplay-server.sh modules/private/01-syncplay-server-fixed.sh`
-- Menu route review: `Main -> Private -> Syncplay Server` uses the fixed wrapper.
-- Install prompt review: `service_name`, `port`, `password`, `salt`, `isolate`,
-  `bind_mode`, and `motd` are populated before the Plan output.
-- No real secrets/endpoints committed.
-- GitHub Actions ShellCheck if configured.
+- `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
+- Menu smoke test to `Manual Tunnel Lab -> WaterWall Reverse TLS TCP Forward`.
+- Static review of generated WaterWall `core.json` / `config.json` shapes
+  against upstream node docs and test fixtures.
+- Archive-only delete safety review.
+- `git diff --check`
+- ShellCheck locally if available.
+- GitHub Actions ShellCheck on the PR.
 
 ## Remaining Issues
 
-- Live install/reinstall still needs a real Ubuntu/Debian VPS with root after
-  this hotfix is merged.
-- Provider/security-group firewall must still allow the selected TCP port.
+- Full end-to-end WaterWall packet proof still needs two controlled Linux VPSes
+  with the downloaded WaterWall binary and a real destination TCP listener.
+- Provider/security-group firewalls must allow the selected Iran entry TCP port
+  and Foreign tunnel control TCP port.
+- The helper uses a self-signed Foreign TLS certificate and `TlsClient`
+  `verify: false` for this private tunnel workflow.
 
 ## Next Exact Step
 
-Open a small PR for the Syncplay prompt hotfix, inspect the diff and GitHub
-checks, merge only if checks pass, then ask the user to pull `main` and retry the
-Syncplay install from the normal menu.
+Open the PR, wait for GitHub Actions/ShellCheck, inspect that the diff only
+contains this WaterWall helper/documentation/version batch, and merge into
+`main` only if checks pass. Do not release, tag, or deploy.
