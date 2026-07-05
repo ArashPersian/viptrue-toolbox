@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.4 - Unreleased
+
+- Fixed the Syncplay install prompt value handoff so `service_name` is set before
+  the install Plan is printed under `set -u`.
+- Routed `Private -> Syncplay Server` through a hotfix wrapper that overrides the
+  shadowed prompt function while preserving the existing Syncplay manager.
+- Added a regression target for the install prompt path before any root/system
+  changes are started.
+
 ## 0.4.3 - Unreleased
 
 - Added `Private -> Syncplay Server` with install/reinstall, status, restart,
