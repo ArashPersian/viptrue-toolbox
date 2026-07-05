@@ -16,7 +16,7 @@ viptrue_private_menu() {
     read -r -p "Enter your choice [0-1]: " choice
 
     case "$choice" in
-      1) bash "$BASE_DIR/modules/private/01-syncplay-server.sh" ;;
+      1) bash "$BASE_DIR/modules/private/01-syncplay-server-fixed.sh" ;;
       0) return 0 ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
