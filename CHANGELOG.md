@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.6 - Unreleased
+
+- Added a WaterWall binary runtime self-test before Foreign or Iran services are
+  written or started, including explicit Illegal instruction / signal ILL /
+  exit code `132` handling.
+- Added x86_64 AVX2 compatibility warnings and CPU/binary diagnostics for older
+  VPS CPUs that can crash newer WaterWall release binaries.
+- Added compatible custom binary override support through
+  `VIPTRUE_WATERWALL_BIN` or an interactive fallback prompt after self-test
+  failure, with the selected path stored in profile metadata and systemd.
+- Added an Iran control-port reachability guard before writing the Iran profile,
+  plus a WaterWall port reachability probe menu.
+- Expanded WaterWall profile tests with binary self-test, service, listener,
+  control-port, local entry-port, and destination-listener diagnostics.
+- Scoped failed-service stop/reset prompts to the same managed WaterWall profile.
+
 ## 0.4.5 - Unreleased
 
 - Added `Tunnel Manager -> Manual Tunnel Lab -> WaterWall Reverse TLS TCP

@@ -6614,6 +6614,214 @@ waterwall_reverse_bin_path() {
   fi
 }
 
+waterwall_cpu_compat_hint() {
+  local arch flags
+
+  arch="$(uname -m 2>/dev/null || printf unknown)"
+  case "$arch" in
+    x86_64|amd64)
+      if have_cmd lscpu; then
+        flags="$(lscpu 2>/dev/null | awk -F: '/^Flags:/ {print $2; exit}' || true)"
+        if [[ -n "$flags" && " $flags " != *" avx2 "* ]]; then
+          warn_line "WaterWall CPU compatibility" "CPU lacks AVX2; the current WaterWall release binary may crash with Illegal instruction."
+          echo "Use a newer VPS CPU or provide a compatible WaterWall binary."
+        fi
+      else
+        warn_line "lscpu" "not available; cannot inspect x86_64 CPU flags for AVX2"
+      fi
+      ;;
+  esac
+}
+
+waterwall_print_cpu_hints() {
+  local bin="$1"
+
+  echo
+  echo -e "${YELLOW}CPU / binary hints${NC}"
+  echo "uname -m: $(uname -m 2>/dev/null || printf unknown)"
+  if have_cmd lscpu; then
+    lscpu 2>/dev/null | awk -F: '
+      /^(Architecture|Model name|Flags):/ {
+        gsub(/^[[:space:]]+/, "", $2)
+        print $1 ": " $2
+      }
+    ' || true
+  else
+    echo "lscpu: not available"
+  fi
+  if have_cmd file && [[ -e "$bin" ]]; then
+    file "$bin" 2>/dev/null || true
+  else
+    echo "file: not available or binary missing"
+  fi
+}
+
+waterwall_binary_self_test() {
+  local bin="${1:-$WW_REV_BIN}"
+  local output_file rc
+
+  if [[ ! -x "$bin" ]]; then
+    fail_line "WaterWall binary" "$bin is not executable"
+    return 127
+  fi
+
+  output_file="$(mktemp)"
+  set +e
+  "$bin" --help >"$output_file" 2>&1
+  rc=$?
+  set -e
+
+  if grep -Eiq 'illegal instruction|invalid opcode|core dumped|signal[ =:_-]*ill' "$output_file" || [[ "$rc" == "132" ]]; then
+    fail_line "WaterWall binary" "incompatible with this CPU/OS: Illegal instruction"
+    waterwall_print_cpu_hints "$bin"
+    rm -f "$output_file"
+    return 132
+  fi
+
+  if [[ "$rc" -ne 0 && "$rc" -ne 1 ]]; then
+    warn_line "WaterWall binary" "self-test returned rc=$rc; inspect output"
+    sed -n '1,12p' "$output_file" 2>/dev/null || true
+  else
+    pass_line "WaterWall binary self-test" "$bin"
+  fi
+
+  rm -f "$output_file"
+  return 0
+}
+
+waterwall_same_profile_service_known() {
+  local service_name="$1"
+
+  have_cmd systemctl || return 1
+  systemctl cat "$service_name" >/dev/null 2>&1 || \
+    systemctl status "$service_name" >/dev/null 2>&1 || \
+    systemctl is-failed --quiet "$service_name" 2>/dev/null || \
+    systemctl is-active --quiet "$service_name" 2>/dev/null
+}
+
+waterwall_offer_reset_failed_service() {
+  local service_name="$1"
+  local confirm
+
+  waterwall_same_profile_service_known "$service_name" || return 0
+
+  warn_line "same-profile service" "$service_name may be failed or crash-looping"
+  read -r -p "Stop and reset failed service now? [Y/n]: " confirm
+  confirm="${confirm:-Y}"
+  case "$confirm" in
+    y|Y|yes|YES)
+      systemctl stop "$service_name" 2>/dev/null || true
+      systemctl reset-failed "$service_name" 2>/dev/null || true
+      pass_line "same-profile service reset" "$service_name"
+      ;;
+    *) info_line "same-profile service reset" "skipped" ;;
+  esac
+}
+
+waterwall_select_custom_binary() {
+  local service_name="$1"
+  local custom answer rc
+
+  read -r -p "Use custom compatible WaterWall binary path? [y/N]: " answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) return 1 ;;
+  esac
+
+  read -r -p "Custom WaterWall binary path: " custom
+  if [[ ! -x "$custom" ]]; then
+    fail_line "custom WaterWall binary" "$custom is not executable"
+    return 1
+  fi
+
+  if waterwall_binary_self_test "$custom"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    WW_SELECTED_BIN_PATH="$custom"
+    pass_line "custom WaterWall binary" "$custom"
+    return 0
+  fi
+
+  if [[ "$rc" -eq 132 ]]; then
+    waterwall_offer_reset_failed_service "$service_name"
+  fi
+  return "$rc"
+}
+
+waterwall_prepare_binary_for_profile() {
+  local service_name="$1"
+  local bin_path rc
+
+  WW_SELECTED_BIN_PATH=""
+  bin_path="$(waterwall_reverse_bin_path)"
+  waterwall_cpu_compat_hint
+
+  if waterwall_binary_self_test "$bin_path"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    WW_SELECTED_BIN_PATH="$bin_path"
+    return 0
+  fi
+
+  if [[ "$rc" -eq 132 ]]; then
+    waterwall_offer_reset_failed_service "$service_name"
+  fi
+
+  echo "Next step: Use a newer VPS CPU or provide a compatible WaterWall binary path."
+  if waterwall_select_custom_binary "$service_name"; then
+    return 0
+  fi
+
+  return "$rc"
+}
+
+waterwall_tcp_reachability_probe() {
+  local host="$1"
+  local port="$2"
+  local timeout_s="${3:-5}"
+
+  if have_cmd timeout && have_cmd bash; then
+    timeout "$timeout_s" bash -c ': < /dev/tcp/"$1"/"$2"' _ "$host" "$port" >/dev/null 2>&1
+  elif have_cmd nc; then
+    nc -z -w "$timeout_s" "$host" "$port" >/dev/null 2>&1
+  else
+    warn_line "TCP reachability probe" "requires timeout+bash or nc"
+    return 2
+  fi
+}
+
+waterwall_iran_control_port_guard() {
+  local host="$1"
+  local port="$2"
+  local confirm
+
+  echo
+  echo -e "${YELLOW}Foreign control-port reachability${NC}"
+  if waterwall_tcp_reachability_probe "$host" "$port" 5; then
+    pass_line "Foreign control port" "Iran can reach $host:$port/tcp"
+    return 0
+  fi
+
+  fail_line "Foreign control port" "Iran cannot reach $host:$port/tcp"
+  echo "Likely blockers:"
+  echo "- provider security group"
+  echo "- NACL/firewall"
+  echo "- blocked or filtered TCP port"
+  echo "- wrong IP/domain"
+  echo "- Foreign WaterWall control listener not active"
+  read -r -p "Continue anyway? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 waterwall_reverse_asset_for_arch() {
   local arch
 
@@ -6899,6 +7107,7 @@ waterwall_reverse_write_meta() {
   local sni="$8"
   local service_name="$9"
   local meta_path="${10}"
+  local bin_path="${11:-$(waterwall_reverse_bin_path)}"
 
   cat > "$meta_path" <<EOF_WW_META
 engine=waterwall_reverse_tls_tcp
@@ -6911,6 +7120,7 @@ destination_port=$dest_port
 control_port=$control_port
 sni=$sni
 service_name=$service_name
+waterwall_bin=$bin_path
 created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF_WW_META
   chmod 600 "$meta_path"
@@ -6920,9 +7130,10 @@ waterwall_reverse_write_service() {
   local service_name="$3"
   local role_dir="$4"
   local description="$5"
-  local service_path bin_path
+  local bin_path="${6:-}"
+  local service_path
 
-  bin_path="$(waterwall_reverse_bin_path)"
+  bin_path="${bin_path:-$(waterwall_reverse_bin_path)}"
   service_path="$HY2_SYSTEMD_SYSTEM_DIR/$service_name"
   backup_existing_file "$service_path"
 
@@ -7052,6 +7263,7 @@ WW_PLAN_DEST_PORT=""
 WW_PLAN_CONTROL_PORT=""
 WW_PLAN_SNI=""
 WW_PLAN_PROFILE=""
+WW_SELECTED_BIN_PATH=""
 
 waterwall_reverse_prompt_plan() {
   WW_PLAN_ENTRY_PORT="$(prompt_default "Entry listen port" "5049")"
@@ -7144,6 +7356,7 @@ waterwall_reverse_setup_foreign() {
   ensure_root || { pause; return; }
   require_cmd systemctl systemd || { pause; return; }
   ensure_waterwall_ready || { pause; return; }
+  waterwall_prepare_binary_for_profile "$service_name" || { pause; return; }
   require_cmd openssl openssl || { pause; return; }
   waterwall_reverse_ensure_dirs
 
@@ -7165,8 +7378,8 @@ waterwall_reverse_setup_foreign() {
   hy2_wg_generate_self_signed_cert "$cert_path" "$key_path" "$WW_PLAN_SNI" || { pause; return; }
   waterwall_reverse_write_core "$role_dir"
   waterwall_reverse_write_foreign_config "$profile" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$config_path" "$cert_path" "$key_path"
-  waterwall_reverse_write_meta "foreign" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path"
-  waterwall_reverse_write_service "foreign" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP foreign exit $profile"
+  waterwall_reverse_write_meta "foreign" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path" "$WW_SELECTED_BIN_PATH"
+  waterwall_reverse_write_service "foreign" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP foreign exit $profile" "$WW_SELECTED_BIN_PATH"
 
   start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
   hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
@@ -7228,6 +7441,17 @@ waterwall_reverse_setup_iran() {
   echo "Existing managed files for this role will be archived before replacement."
   echo "Only the same profile service may be stopped, after confirmation."
   echo
+  waterwall_iran_control_port_guard "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_CONTROL_PORT" || {
+    set_summary \
+      "WaterWall Iran control-port reachability preflight." \
+      "Iran cannot reach the Foreign control TCP port, so the profile was not written or started." \
+      "Fix provider firewall/security group, server firewall, TCP port filtering, or wrong host/port, then rerun Iran setup." \
+      "Yes: Foreign listener/firewall/provider network path likely needs action."
+    print_summary
+    pause
+    return
+  }
+  echo
   read -r -p "Create/replace the Iran WaterWall profile now? [y/N]: " confirm
   case "$confirm" in
     y|Y|yes|YES) ;;
@@ -7241,6 +7465,7 @@ waterwall_reverse_setup_iran() {
   ensure_root || { pause; return; }
   require_cmd systemctl systemd || { pause; return; }
   ensure_waterwall_ready || { pause; return; }
+  waterwall_prepare_binary_for_profile "$service_name" || { pause; return; }
   waterwall_reverse_ensure_dirs
 
   waterwall_reverse_stop_same_profile_service "$service_name" || { pause; return; }
@@ -7260,8 +7485,8 @@ waterwall_reverse_setup_iran() {
 
   waterwall_reverse_write_core "$role_dir"
   waterwall_reverse_write_iran_config "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$config_path"
-  waterwall_reverse_write_meta "iran" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path"
-  waterwall_reverse_write_service "iran" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP Iran entry $profile"
+  waterwall_reverse_write_meta "iran" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path" "$WW_SELECTED_BIN_PATH"
+  waterwall_reverse_write_service "iran" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP Iran entry $profile" "$WW_SELECTED_BIN_PATH"
 
   start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
   hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
@@ -7299,6 +7524,7 @@ WW_PROFILE_FOREIGN_HOSTS=()
 WW_PROFILE_DESTINATIONS=()
 WW_PROFILE_CONTROL_PORTS=()
 WW_PROFILE_SNIS=()
+WW_PROFILE_BIN_PATHS=()
 
 WW_SELECTED_NAME=""
 WW_SELECTED_ROLE=""
@@ -7309,9 +7535,10 @@ WW_SELECTED_FOREIGN_HOST=""
 WW_SELECTED_DESTINATION=""
 WW_SELECTED_CONTROL_PORT=""
 WW_SELECTED_SNI=""
+WW_SELECTED_BIN_PATH=""
 
 waterwall_reverse_collect_profiles() {
-  local meta_path profile role service entry_port foreign_host dest_host dest_port control_port sni destination
+  local meta_path profile role service entry_port foreign_host dest_host dest_port control_port sni destination bin_path
 
   WW_PROFILE_NAMES=()
   WW_PROFILE_ROLES=()
@@ -7322,6 +7549,7 @@ waterwall_reverse_collect_profiles() {
   WW_PROFILE_DESTINATIONS=()
   WW_PROFILE_CONTROL_PORTS=()
   WW_PROFILE_SNIS=()
+  WW_PROFILE_BIN_PATHS=()
 
   [[ -d "$WW_REV_PROFILE_DIR" ]] || return 0
   while IFS= read -r -d '' meta_path; do
@@ -7336,6 +7564,7 @@ waterwall_reverse_collect_profiles() {
     dest_port="$(waterwall_reverse_meta_value "$meta_path" "destination_port")"
     control_port="$(waterwall_reverse_meta_value "$meta_path" "control_port")"
     sni="$(waterwall_reverse_meta_value "$meta_path" "sni")"
+    bin_path="$(waterwall_reverse_meta_value "$meta_path" "waterwall_bin")"
     destination="${dest_host:-unknown}:${dest_port:-unknown}"
 
     WW_PROFILE_NAMES+=("$profile")
@@ -7347,6 +7576,7 @@ waterwall_reverse_collect_profiles() {
     WW_PROFILE_DESTINATIONS+=("$destination")
     WW_PROFILE_CONTROL_PORTS+=("${control_port:-unknown}")
     WW_PROFILE_SNIS+=("${sni:-unknown}")
+    WW_PROFILE_BIN_PATHS+=("${bin_path:-$(waterwall_reverse_bin_path)}")
   done < <(find "$WW_REV_PROFILE_DIR" -mindepth 3 -maxdepth 3 -type f -name 'profile.meta' -print0 2>/dev/null | sort -z)
 }
 
@@ -7372,6 +7602,7 @@ waterwall_reverse_list_profiles() {
       "${WW_PROFILE_ENTRY_PORTS[$i]}" "${WW_PROFILE_CONTROL_PORTS[$i]}" "$service_status"
     printf '    foreign: %-24s destination: %s\n' "${WW_PROFILE_FOREIGN_HOSTS[$i]}" "${WW_PROFILE_DESTINATIONS[$i]}"
     printf '    service: %-34s sni: %s\n' "${WW_PROFILE_SERVICES[$i]}" "${WW_PROFILE_SNIS[$i]}"
+    printf '    binary: %s\n' "${WW_PROFILE_BIN_PATHS[$i]}"
     printf '    endpoint/control hint: %s\n' "$endpoint"
   done
 }
@@ -7398,6 +7629,7 @@ waterwall_reverse_select_profile() {
   WW_SELECTED_DESTINATION="${WW_PROFILE_DESTINATIONS[$selected]}"
   WW_SELECTED_CONTROL_PORT="${WW_PROFILE_CONTROL_PORTS[$selected]}"
   WW_SELECTED_SNI="${WW_PROFILE_SNIS[$selected]}"
+  WW_SELECTED_BIN_PATH="${WW_PROFILE_BIN_PATHS[$selected]}"
 }
 
 waterwall_reverse_sanitize_config() {
@@ -7429,6 +7661,7 @@ waterwall_reverse_show_profile_details() {
   echo "Destination: $WW_SELECTED_DESTINATION"
   echo "SNI: $WW_SELECTED_SNI"
   echo "Service: $WW_SELECTED_SERVICE ($(hy2_wg_service_status_text "$WW_SELECTED_SERVICE"))"
+  echo "WaterWall binary: $WW_SELECTED_BIN_PATH"
   echo "Config: $config_path"
   echo "Core: $core_path"
   if [[ "$WW_SELECTED_ROLE" == "foreign" ]]; then
@@ -7537,13 +7770,79 @@ waterwall_reverse_delete_profile() {
   pause
 }
 
+waterwall_reverse_port_probe_menu() {
+  local foreign_host ports_raw normalized_ports iran_ip port result
+  local -a ports=()
+
+  title
+  echo -e "${CYAN}WaterWall Reverse TLS TCP Forward > Port reachability probe${NC}"
+  line
+  echo
+
+  foreign_host="$(prompt_default "Foreign host/IP" "FOREIGN_PUBLIC_IP_OR_DOMAIN")"
+  if ! valid_waterwall_host "$foreign_host"; then
+    fail_line "foreign host/IP" "must be non-empty and contain no spaces, semicolons, or equals signs"
+    pause
+    return
+  fi
+
+  ports_raw="$(prompt_default "Candidate TCP ports, comma separated" "443,80,2053,2083,2087,2096,8443,8080")"
+  normalized_ports="${ports_raw//,/ }"
+  for port in $normalized_ports; do
+    port="${port// /}"
+    [[ -n "$port" ]] || continue
+    if valid_port "$port"; then
+      ports+=("$port")
+    else
+      warn_line "candidate port" "skipping invalid value: $port"
+    fi
+  done
+
+  if ((${#ports[@]} == 0)); then
+    fail_line "candidate ports" "no valid ports to probe"
+    pause
+    return
+  fi
+
+  echo
+  printf '%-10s %-8s %s\n' "PORT" "RESULT" "DETAIL"
+  for port in "${ports[@]}"; do
+    if waterwall_tcp_reachability_probe "$foreign_host" "$port" 5; then
+      result="PASS"
+      printf '%-10s %-8s %s\n' "$port" "$result" "TCP connect succeeded"
+    else
+      result="FAIL"
+      printf '%-10s %-8s %s\n' "$port" "$result" "TCP connect failed or timed out"
+    fi
+  done
+
+  echo
+  echo "PASS only proves TCP connect to a listener."
+  echo "FAIL may be provider firewall, port filter, wrong IP/domain, or no listener."
+  iran_ip="$(detect_public_ip)"
+  echo
+  echo -e "${YELLOW}Foreign tcpdump commands${NC}"
+  for port in "${ports[@]}"; do
+    echo "  timeout 40 tcpdump -ni any host $iran_ip and tcp port $port"
+  done
+  pause
+}
+
 waterwall_reverse_run_profile_tests() {
-  local dest_host dest_port marker send_probe watch_command
+  local dest_host dest_port marker send_probe watch_command rc
 
   waterwall_reverse_select_profile || { pause; return; }
   echo
   line
   echo -e "${CYAN}WaterWall Reverse TLS TCP Tests${NC}"
+  waterwall_cpu_compat_hint
+  if waterwall_binary_self_test "$WW_SELECTED_BIN_PATH"; then
+    :
+  else
+    rc=$?
+    warn_line "WaterWall binary self-test" "returned rc=$rc; do not restart/start until this is fixed"
+  fi
+
   if hy2_wg_service_active "$WW_SELECTED_SERVICE"; then
     pass_line "$WW_SELECTED_SERVICE" "active"
   else
@@ -7554,7 +7853,13 @@ waterwall_reverse_run_profile_tests() {
   dest_port="${WW_SELECTED_DESTINATION##*:}"
   if [[ "$WW_SELECTED_ROLE" == "foreign" ]]; then
     check_local_listener tcp "$WW_SELECTED_CONTROL_PORT"
+    if waterwall_tcp_reachability_probe 127.0.0.1 "$WW_SELECTED_CONTROL_PORT" 3; then
+      pass_line "local control-port reachability" "127.0.0.1:$WW_SELECTED_CONTROL_PORT accepts TCP"
+    else
+      warn_line "local control-port reachability" "127.0.0.1:$WW_SELECTED_CONTROL_PORT did not accept TCP"
+    fi
     waterwall_reverse_check_destination_listener "$dest_host" "$dest_port"
+    warn_line "Iran entry-port reachability" "run this profile test on the Iran server for local entry status"
     echo
     echo -e "${YELLOW}Payload proof watcher${NC}"
     watch_command="timeout 45 tcpdump -ni any tcp port $dest_port"
@@ -7566,6 +7871,18 @@ waterwall_reverse_run_profile_tests() {
     fi
   else
     check_local_listener tcp "$WW_SELECTED_ENTRY_PORT"
+    if waterwall_tcp_reachability_probe 127.0.0.1 "$WW_SELECTED_ENTRY_PORT" 3; then
+      pass_line "local entry-port reachability" "127.0.0.1:$WW_SELECTED_ENTRY_PORT accepts TCP"
+    else
+      warn_line "local entry-port reachability" "127.0.0.1:$WW_SELECTED_ENTRY_PORT did not accept TCP"
+    fi
+    if waterwall_tcp_reachability_probe "$WW_SELECTED_FOREIGN_HOST" "$WW_SELECTED_CONTROL_PORT" 5; then
+      pass_line "Foreign control-port reachability" "$WW_SELECTED_FOREIGN_HOST:$WW_SELECTED_CONTROL_PORT accepts TCP"
+    else
+      fail_line "Foreign control-port reachability" "$WW_SELECTED_FOREIGN_HOST:$WW_SELECTED_CONTROL_PORT is not reachable from this host"
+      echo "Likely blockers: provider security group, NACL/firewall, TCP port filter, wrong IP/domain, or no Foreign listener."
+    fi
+    warn_line "destination listener status" "check on Foreign server: $dest_host:$dest_port"
     echo
     echo -e "${YELLOW}TCP payload probe${NC}"
     echo "This sends one short TCP payload to the local Iran entry port. Watch the Foreign destination with tcpdump or app logs."
@@ -7621,10 +7938,11 @@ waterwall_reverse_tcp_menu() {
     echo "6. Logs"
     echo "7. Restart"
     echo "8. Run tests / proof commands"
-    echo "9. Delete profile"
-    echo "10. Back"
+    echo "9. Port reachability probe"
+    echo "10. Delete profile"
+    echo "11. Back"
     echo
-    read -r -p "Enter your choice [1-10]: " choice
+    read -r -p "Enter your choice [1-11]: " choice
 
     case "$choice" in
       1) waterwall_reverse_setup_foreign ;;
@@ -7635,8 +7953,9 @@ waterwall_reverse_tcp_menu() {
       6) waterwall_reverse_logs_profile ;;
       7) waterwall_reverse_restart_profile ;;
       8) waterwall_reverse_run_profile_tests ;;
-      9) waterwall_reverse_delete_profile ;;
-      10) break ;;
+      9) waterwall_reverse_port_probe_menu ;;
+      10) waterwall_reverse_delete_profile ;;
+      11) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
   done
