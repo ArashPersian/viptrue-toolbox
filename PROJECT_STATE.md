@@ -1,68 +1,71 @@
 # Project State
 
-Version: 0.4.6
-Branch: fasttrack/waterwall-preflight-and-probe
-Base commit: 4306e2472d7ab5d07a607f70c7a4b8c4265193bf
+Version: 0.4.7
+Branch: fasttrack/egress-snat-manager
+Base commit: main at implementation time
 Commit: pending PR branch
-PR status: preparing WaterWall preflight and reachability guard
-Release status: no release, tag, or deploy planned for this batch
+PR status: preparing Egress IP / SNAT Manager
+Release status: release/tag not created; requires explicit user confirmation
 
 ## Scope
 
-- Patch `Tunnel Manager -> Manual Tunnel Lab -> WaterWall Reverse TLS TCP
-  Forward` before more live VPS testing.
-- Add a WaterWall binary self-test before any Foreign or Iran service write/start.
-- Detect Illegal instruction / invalid opcode / core dump / exit code `132` and
-  report CPU/binary incompatibility with CPU and binary hints.
-- Warn on x86_64 hosts without AVX2, because some WaterWall release binaries may
-  require newer CPUs.
-- Add compatible custom binary support through `VIPTRUE_WATERWALL_BIN` or an
-  interactive fallback path after self-test failure.
-- Add an Iran control-port reachability guard and a standalone port reachability
-  probe menu.
-- Keep failed-service recovery scoped to the same managed WaterWall profile.
+- Add `Utility Tools -> Egress IP / SNAT Manager` as an independent module.
+- Support server-level egress IP / Source NAT for PasarGuard shared Core/Node
+  setups where each real VPS must expose its own second, floating, or IPv6
+  egress address.
+- Keep Xray `sendThrough` guidance separate from server-level SNAT:
+  `sendThrough` is suitable for one server with multiple hosts, while
+  server-level SNAT is suitable for multiple real servers with separate egress
+  IPs.
+- Add read-only status diagnostics for addresses, default routes, current
+  public IPv4/IPv6 egress, forwarding state, managed SNAT rules, and nft hints.
+- Add IPv4 SNAT configuration with safe default scope limited to VPN/private
+  source subnets.
+- Add IPv6 SNAT configuration with explicit IPv6 support warning and separate
+  IPv6 config fields.
+- Add persistence through `netfilter-persistent` when selected, otherwise a
+  managed idempotent `viptrue-egress-snat.service`.
+- Add rollback that removes only rules tagged with `VIPTRUE_EGRESS_SNAT`.
+- Add egress tests using `curl -4`, `curl -6`, and optional `curl --interface`.
 
 ## Safety Rules
 
-- Do not create or start WaterWall services if the selected binary fails the
-  runtime self-test.
-- Do not hide self-test failures behind `|| true` before capturing the real exit
-  code.
-- Do not stop unrelated tunnels or unrelated services.
-- Do not hard-delete managed files; use archive/reset workflows only.
-- Do not commit real endpoints, secrets, private keys, releases, tags, or
-  deployments.
+- Do not alter default routes without explicit future work.
+- Do not add INPUT rules.
+- Do not touch UFW rules directly.
+- Do not remove manual iptables/nft rules.
+- Before applying or rolling back managed SNAT, write an iptables backup under
+  `/root/viptrue-iptables-backup-TIMESTAMP.rules`.
+- Tag every managed SNAT rule with comment `VIPTRUE_EGRESS_SNAT`.
+- Default IPv4 scope is VPN/private subnets only, not whole-server egress.
+- If the selected egress IP is not assigned on the server, warn and require
+  explicit confirmation before continuing.
 
 ## Checks
 
 Local checks run:
 
-- `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/04-tunnel-manager.sh`
-- `git diff --check`
-- WaterWall menu smoke test.
-- Foreign setup reaches pre-write plan.
-- Iran setup reaches pre-write plan and defaults to not continuing when the
-  Foreign control port probe fails.
-- Port reachability probe menu smoke test.
-- Static/function harness for self-test rc capture, Illegal instruction,
-  `signal=ILL`, exit code `132`, AVX2 warning-only behavior, setup line order,
-  and same-profile reset scope.
-- Local ShellCheck unavailable on this Windows host.
+- `bash -n /workspace/viptrue-local/menus/utility.sh /workspace/viptrue-local/modules/utility/08-egress-snat-manager.sh`
+- `bash -n /workspace/viptrue-local/modules/utility/08-egress-snat-manager.sh`
+- `printf '0\n' | TERM=xterm bash /workspace/viptrue-local/menus/utility.sh`
 
-Pending remote check:
+Pending checks:
 
-- GitHub Actions ShellCheck on the PR.
+- Full repository `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/08-egress-snat-manager.sh` on a local checkout.
+- GitHub Actions ShellCheck, if configured.
+- Live SNAT proof on Ubuntu 22.04/24.04 VPS with a second IPv4/Floating IP.
+- Live IPv6 proof on a VPS with routed IPv6 and ip6tables NAT support.
 
 ## Remaining Issues
 
-- Live end-to-end WaterWall packet proof still needs two controlled Linux VPSes
-  with a compatible WaterWall binary and a real destination TCP listener.
-- If the release binary crashes on an old CPU, use a newer VPS CPU or provide a
-  compatible binary path.
-- Provider/security-group firewalls must allow the selected Iran entry TCP port
-  and Foreign tunnel control TCP port.
+- The Codex workspace could not clone GitHub directly in this environment, so
+  non-destructive local syntax/smoke checks were run against generated files.
+- Live SNAT changes must be tested carefully on a non-critical VPS first.
+- IPv6 SNAT/NAT66 support varies by kernel/provider and should be treated as
+  optional until proven on the target VPS.
 
 ## Next Exact Step
 
-Open the PR, wait for GitHub Actions/ShellCheck, inspect the diff scope, and
-merge into `main` only if checks pass. Do not release, tag, or deploy.
+Open the PR for `fasttrack/egress-snat-manager`, wait for checks, review the
+diff, then test on one non-critical PasarGuard node with a second IPv4. Ask for
+explicit confirmation before creating a GitHub Release/tag for `0.4.7`.
