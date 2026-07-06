@@ -15,10 +15,11 @@ viptrue_utility_menu() {
     echo "4. Tunnel Manager"
     echo "5. Floating IP Manager"
     echo "6. Cloudflare Clean IP Scanner"
+    echo "7. Egress IP / SNAT Manager"
     echo "0. Back"
     echo
     line
-    read -r -p "Enter your choice [0-6]: " choice
+    read -r -p "Enter your choice [0-7]: " choice
 
     case "$choice" in
       1) bash "$BASE_DIR/modules/utility/01-factory-reset.sh" ;;
@@ -27,6 +28,7 @@ viptrue_utility_menu() {
       4) bash "$BASE_DIR/modules/utility/04-tunnel-manager.sh" ;;
       5) bash "$BASE_DIR/modules/utility/06-floating-ip-manager.sh" ;;
       6) bash "$BASE_DIR/modules/utility/07-cf-clean-ip-scanner.sh" ;;
+      7) bash "$BASE_DIR/modules/utility/08-egress-snat-manager.sh" ;;
       0) return 0 ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
