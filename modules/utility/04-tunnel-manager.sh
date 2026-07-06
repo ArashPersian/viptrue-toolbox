@@ -40,6 +40,10 @@ WW_REV_ARCHIVE_DIR="$WW_REV_DIR/archive"
 WW_REV_RELEASE_TAG="${VIPTRUE_WATERWALL_RELEASE_TAG:-v1.46.3}"
 WW_REV_RELEASE_BASE="${VIPTRUE_WATERWALL_RELEASE_BASE:-https://github.com/radkesvat/WaterWall/releases/download/$WW_REV_RELEASE_TAG}"
 WW_REV_BIN="${VIPTRUE_WATERWALL_BIN:-/usr/local/bin/waterwall}"
+WW_REV_COMPAT_DIR="${VIPTRUE_WATERWALL_COMPAT_DIR:-/opt/viptrue-waterwall/bin}"
+WW_REV_OLDCPU_BIN="$WW_REV_COMPAT_DIR/waterwall-oldcpu"
+WW_REV_BUILD_DIR="${VIPTRUE_WATERWALL_BUILD_DIR:-/tmp/viptrue-waterwall-build}"
+WW_REV_OLDCPU_PRESET="${VIPTRUE_WATERWALL_OLDCPU_PRESET:-linux-gcc-x64-old-cpu}"
 WW_REV_FOREIGN_SERVICE_PREFIX="viptrue-waterwall-foreign"
 WW_REV_IRAN_SERVICE_PREFIX="viptrue-waterwall-iran"
 
@@ -6614,38 +6618,94 @@ waterwall_reverse_bin_path() {
   fi
 }
 
+waterwall_cpu_arch() {
+  uname -m 2>/dev/null || printf 'unknown\n'
+}
+
+waterwall_cpu_model() {
+  if have_cmd lscpu; then
+    lscpu 2>/dev/null | awk -F: '/^Model name:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}' || true
+  fi
+}
+
+waterwall_cpu_flags() {
+  if have_cmd lscpu; then
+    lscpu 2>/dev/null | awk -F: '/^Flags:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}' || true
+  fi
+}
+
+waterwall_cpu_has_avx2() {
+  local flags
+
+  flags="$(waterwall_cpu_flags)"
+  [[ -n "$flags" && " $flags " == *" avx2 "* ]]
+}
+
+waterwall_cpu_needs_oldcpu_binary() {
+  local arch flags
+
+  arch="$(waterwall_cpu_arch)"
+  case "$arch" in
+    x86_64|amd64)
+      flags="$(waterwall_cpu_flags)"
+      [[ -n "$flags" && " $flags " != *" avx2 "* ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 waterwall_cpu_compat_hint() {
   local arch flags
 
-  arch="$(uname -m 2>/dev/null || printf unknown)"
+  arch="$(waterwall_cpu_arch)"
   case "$arch" in
     x86_64|amd64)
-      if have_cmd lscpu; then
-        flags="$(lscpu 2>/dev/null | awk -F: '/^Flags:/ {print $2; exit}' || true)"
-        if [[ -n "$flags" && " $flags " != *" avx2 "* ]]; then
-          warn_line "WaterWall CPU compatibility" "CPU lacks AVX2; the current WaterWall release binary may crash with Illegal instruction."
-          echo "Use a newer VPS CPU or provide a compatible WaterWall binary."
-        fi
-      else
-        warn_line "lscpu" "not available; cannot inspect x86_64 CPU flags for AVX2"
+      flags="$(waterwall_cpu_flags)"
+      if [[ -z "$flags" ]]; then
+        warn_line "WaterWall CPU compatibility" "cannot inspect x86_64 CPU flags for AVX2"
+      elif [[ " $flags " != *" avx2 "* ]]; then
+        warn_line "WaterWall CPU compatibility" "CPU lacks AVX2; the current WaterWall release binary may crash with Illegal instruction."
+        echo "Use a newer VPS CPU or provide a compatible WaterWall binary."
       fi
       ;;
   esac
 }
 
+waterwall_print_cpu_summary() {
+  local arch model flags
+
+  arch="$(waterwall_cpu_arch)"
+  model="$(waterwall_cpu_model)"
+  flags="$(waterwall_cpu_flags)"
+
+  echo "Architecture: $arch"
+  echo "CPU model: ${model:-unknown}"
+  case "$arch" in
+    x86_64|amd64)
+      if [[ -z "$flags" ]]; then
+        warn_line "AVX2" "unknown; lscpu flags unavailable"
+      elif waterwall_cpu_has_avx2; then
+        pass_line "AVX2" "present"
+      else
+        warn_line "AVX2" "missing; old-CPU WaterWall build is recommended"
+      fi
+      ;;
+    *) info_line "AVX2" "not applicable for $arch" ;;
+  esac
+}
+
 waterwall_print_cpu_hints() {
   local bin="$1"
+  local flags
 
   echo
   echo -e "${YELLOW}CPU / binary hints${NC}"
-  echo "uname -m: $(uname -m 2>/dev/null || printf unknown)"
-  if have_cmd lscpu; then
-    lscpu 2>/dev/null | awk -F: '
-      /^(Architecture|Model name|Flags):/ {
-        gsub(/^[[:space:]]+/, "", $2)
-        print $1 ": " $2
-      }
-    ' || true
+  waterwall_print_cpu_summary
+  flags="$(waterwall_cpu_flags)"
+  if [[ -n "$flags" ]]; then
+    echo "Flags: $flags"
+  elif have_cmd lscpu; then
+    echo "Flags: unavailable"
   else
     echo "lscpu: not available"
   fi
@@ -6719,7 +6779,7 @@ waterwall_offer_reset_failed_service() {
 }
 
 waterwall_select_custom_binary() {
-  local service_name="$1"
+  local service_name="${1:-}"
   local custom answer rc
 
   read -r -p "Use custom compatible WaterWall binary path? [y/N]: " answer
@@ -6740,45 +6800,239 @@ waterwall_select_custom_binary() {
     rc=$?
   fi
   if [[ "$rc" -eq 0 ]]; then
+    WW_PLAN_BIN_PATH="$custom"
     WW_SELECTED_BIN_PATH="$custom"
     pass_line "custom WaterWall binary" "$custom"
     return 0
   fi
 
-  if [[ "$rc" -eq 132 ]]; then
+  if [[ "$rc" -eq 132 && -n "$service_name" ]]; then
     waterwall_offer_reset_failed_service "$service_name"
   fi
   return "$rc"
 }
 
-waterwall_prepare_binary_for_profile() {
-  local service_name="$1"
-  local bin_path rc
+waterwall_safe_build_dir() {
+  local build_dir="$1"
 
-  WW_SELECTED_BIN_PATH=""
-  bin_path="$(waterwall_reverse_bin_path)"
-  waterwall_cpu_compat_hint
+  [[ -n "$build_dir" ]] || return 1
+  [[ "$build_dir" != "/" && "$build_dir" != "/tmp" && "$build_dir" != "/var/tmp" ]] || return 1
+  [[ "$build_dir" != *".."* ]] || return 1
 
-  if waterwall_binary_self_test "$bin_path"; then
-    rc=0
-  else
-    rc=$?
+  case "$build_dir" in
+    /tmp/viptrue-waterwall-build|/tmp/viptrue-waterwall-build/*|/tmp/viptrue-waterwall-build-*|\
+    /var/tmp/viptrue-waterwall-build|/var/tmp/viptrue-waterwall-build/*|/var/tmp/viptrue-waterwall-build-*)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+waterwall_install_build_dependencies() {
+  local confirm
+
+  ensure_root || return 1
+  if ! have_cmd apt-get; then
+    fail_line "WaterWall build dependencies" "unsupported distro; install git, snapd, build-essential, ninja-build, ccache, file, and cmake manually"
+    return 1
   fi
-  if [[ "$rc" -eq 0 ]]; then
-    WW_SELECTED_BIN_PATH="$bin_path"
+
+  echo "Required packages: git snapd build-essential ninja-build ccache file"
+  if ! have_cmd cmake; then
+    echo "cmake is missing and will be installed with: snap install cmake --classic"
+  fi
+  read -r -p "Install WaterWall build dependencies now? [y/N]: " confirm
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      fail_line "WaterWall build dependencies" "package install cancelled"
+      return 1
+      ;;
+  esac
+
+  apt-get update
+  apt-get install -y git snapd build-essential ninja-build ccache file
+
+  if ! have_cmd cmake; then
+    if ! have_cmd snap; then
+      fail_line "cmake" "snap command is unavailable after installing snapd"
+      return 1
+    fi
+    snap install cmake --classic
+  fi
+  if ! have_cmd cmake && [[ -x /snap/bin/cmake ]]; then
+    export PATH="/snap/bin:$PATH"
+  fi
+  if ! have_cmd cmake; then
+    fail_line "cmake" "not available after dependency install"
+    return 1
+  fi
+}
+
+waterwall_build_oldcpu_binary() {
+  local build_dir="$WW_REV_BUILD_DIR"
+  local binary_path jobs
+
+  ensure_root || return 1
+  waterwall_install_build_dependencies || return 1
+  if ! waterwall_safe_build_dir "$build_dir"; then
+    fail_line "WaterWall build directory" "$build_dir is not a safe temporary path"
+    return 1
+  fi
+
+  rm -rf -- "${build_dir:?}"
+  git clone --depth 1 https://github.com/radkesvat/WaterWall "$build_dir"
+  jobs="$(nproc 2>/dev/null || printf '1')"
+  (
+    cd "$build_dir"
+    cmake --preset "$WW_REV_OLDCPU_PRESET"
+    cmake --build --preset "$WW_REV_OLDCPU_PRESET" -j"$jobs"
+  )
+
+  binary_path="$(find "$build_dir" -type f -name 'Waterwall' -perm /111 -print -quit 2>/dev/null || true)"
+  if [[ -z "$binary_path" ]]; then
+    binary_path="$(find "$build_dir" -type f -name 'Waterwall' -print -quit 2>/dev/null || true)"
+  fi
+  if [[ -z "$binary_path" ]]; then
+    fail_line "WaterWall old-CPU build" "no executable named Waterwall found after build"
+    return 1
+  fi
+
+  mkdir -p "$WW_REV_COMPAT_DIR"
+  install -m 0755 "$binary_path" "$WW_REV_OLDCPU_BIN"
+  chmod +x "$WW_REV_OLDCPU_BIN"
+
+  if waterwall_binary_self_test "$WW_REV_OLDCPU_BIN"; then
+    pass_line "compatible WaterWall binary installed" "$WW_REV_OLDCPU_BIN"
     return 0
   fi
 
-  if [[ "$rc" -eq 132 ]]; then
-    waterwall_offer_reset_failed_service "$service_name"
+  fail_line "WaterWall old-CPU binary" "build completed but self-test failed"
+  return 1
+}
+
+waterwall_select_plan_binary() {
+  local label="$1"
+  local bin_path="$2"
+  local rc
+
+  if [[ ! -x "$bin_path" ]]; then
+    fail_line "$label" "$bin_path is not executable"
+    return 127
   fi
 
-  echo "Next step: Use a newer VPS CPU or provide a compatible WaterWall binary path."
+  if waterwall_binary_self_test "$bin_path"; then
+    WW_PLAN_BIN_PATH="$bin_path"
+    WW_SELECTED_BIN_PATH="$bin_path"
+    pass_line "$label selected" "$bin_path"
+    return 0
+  else
+    rc=$?
+  fi
+  return "$rc"
+}
+
+waterwall_offer_auto_install_binary() {
+  local default_rc="${1:-0}"
+  local answer candidate rc
+
+  read -r -p "Auto install/build a compatible WaterWall binary now? [y/N]: " answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) return 1 ;;
+  esac
+
+  if waterwall_cpu_needs_oldcpu_binary || [[ "$default_rc" == "132" ]]; then
+    waterwall_build_oldcpu_binary || return 1
+    waterwall_select_plan_binary "old-CPU WaterWall binary" "$WW_REV_OLDCPU_BIN"
+    return
+  fi
+
+  ensure_waterwall_ready || return 1
+  candidate="$(waterwall_reverse_bin_path)"
+  if waterwall_select_plan_binary "WaterWall binary" "$candidate"; then
+    return 0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" -eq 132 ]]; then
+    warn_line "WaterWall stock binary" "failed with CPU/binary incompatibility; trying old-CPU build"
+    waterwall_build_oldcpu_binary || return 1
+    waterwall_select_plan_binary "old-CPU WaterWall binary" "$WW_REV_OLDCPU_BIN"
+    return
+  fi
+  return "$rc"
+}
+
+waterwall_choose_compatible_binary() {
+  local service_name="${1:-}"
+  local bin_path rc default_rc default_missing
+
+  WW_PLAN_BIN_PATH=""
+  WW_SELECTED_BIN_PATH=""
+
+  if [[ -n "${VIPTRUE_WATERWALL_BIN:-}" ]]; then
+    bin_path="$VIPTRUE_WATERWALL_BIN"
+    info_line "VIPTRUE_WATERWALL_BIN" "testing explicit override: $bin_path"
+    if waterwall_select_plan_binary "VIPTRUE_WATERWALL_BIN" "$bin_path"; then
+      return 0
+    else
+      rc=$?
+    fi
+    if [[ "$rc" -eq 132 && -n "$service_name" ]]; then
+      waterwall_offer_reset_failed_service "$service_name"
+    fi
+    fail_line "VIPTRUE_WATERWALL_BIN" "override failed self-test; fix or unset it before setup"
+    return "$rc"
+  fi
+
+  default_rc=0
+  default_missing=0
+  bin_path="$(waterwall_reverse_bin_path)"
+  waterwall_cpu_compat_hint
+
+  if [[ -x "$bin_path" ]]; then
+    if waterwall_select_plan_binary "WaterWall binary" "$bin_path"; then
+      return 0
+    else
+      default_rc=$?
+    fi
+    if [[ "$default_rc" -eq 132 && -n "$service_name" ]]; then
+      waterwall_offer_reset_failed_service "$service_name"
+    fi
+  else
+    default_missing=1
+    warn_line "WaterWall binary" "$bin_path is not installed or not executable"
+  fi
+
+  if [[ -x "$WW_REV_OLDCPU_BIN" ]]; then
+    if waterwall_select_plan_binary "old-CPU WaterWall binary" "$WW_REV_OLDCPU_BIN"; then
+      return 0
+    fi
+    warn_line "old-CPU WaterWall binary" "$WW_REV_OLDCPU_BIN failed self-test"
+  fi
+
+  if waterwall_cpu_needs_oldcpu_binary || [[ "$default_rc" == "132" || "$default_missing" == "1" ]]; then
+    if waterwall_offer_auto_install_binary "$default_rc"; then
+      return 0
+    fi
+  fi
+
+  echo "Next step: Use a newer VPS CPU, auto-build the old-CPU binary, or provide a compatible WaterWall binary path."
   if waterwall_select_custom_binary "$service_name"; then
     return 0
   fi
 
-  return "$rc"
+  if [[ "$default_rc" != "0" ]]; then
+    return "$default_rc"
+  fi
+  return 1
+}
+
+waterwall_prepare_binary_for_profile() {
+  local service_name="${1:-}"
+
+  waterwall_choose_compatible_binary "$service_name"
 }
 
 waterwall_tcp_reachability_probe() {
@@ -7146,7 +7400,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$role_dir
-ExecStart=$bin_path
+ExecStart=$bin_path --run -c core.json
 Restart=always
 RestartSec=3
 LimitNOFILE=infinity
@@ -7263,6 +7517,7 @@ WW_PLAN_DEST_PORT=""
 WW_PLAN_CONTROL_PORT=""
 WW_PLAN_SNI=""
 WW_PLAN_PROFILE=""
+WW_PLAN_BIN_PATH=""
 WW_SELECTED_BIN_PATH=""
 
 waterwall_reverse_prompt_plan() {
@@ -7355,8 +7610,7 @@ waterwall_reverse_setup_foreign() {
 
   ensure_root || { pause; return; }
   require_cmd systemctl systemd || { pause; return; }
-  ensure_waterwall_ready || { pause; return; }
-  waterwall_prepare_binary_for_profile "$service_name" || { pause; return; }
+  waterwall_choose_compatible_binary "$service_name" || { pause; return; }
   require_cmd openssl openssl || { pause; return; }
   waterwall_reverse_ensure_dirs
 
@@ -7378,8 +7632,8 @@ waterwall_reverse_setup_foreign() {
   hy2_wg_generate_self_signed_cert "$cert_path" "$key_path" "$WW_PLAN_SNI" || { pause; return; }
   waterwall_reverse_write_core "$role_dir"
   waterwall_reverse_write_foreign_config "$profile" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$config_path" "$cert_path" "$key_path"
-  waterwall_reverse_write_meta "foreign" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path" "$WW_SELECTED_BIN_PATH"
-  waterwall_reverse_write_service "foreign" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP foreign exit $profile" "$WW_SELECTED_BIN_PATH"
+  waterwall_reverse_write_meta "foreign" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path" "$WW_PLAN_BIN_PATH"
+  waterwall_reverse_write_service "foreign" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP foreign exit $profile" "$WW_PLAN_BIN_PATH"
 
   start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
   hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
@@ -7464,8 +7718,7 @@ waterwall_reverse_setup_iran() {
 
   ensure_root || { pause; return; }
   require_cmd systemctl systemd || { pause; return; }
-  ensure_waterwall_ready || { pause; return; }
-  waterwall_prepare_binary_for_profile "$service_name" || { pause; return; }
+  waterwall_choose_compatible_binary "$service_name" || { pause; return; }
   waterwall_reverse_ensure_dirs
 
   waterwall_reverse_stop_same_profile_service "$service_name" || { pause; return; }
@@ -7485,8 +7738,8 @@ waterwall_reverse_setup_iran() {
 
   waterwall_reverse_write_core "$role_dir"
   waterwall_reverse_write_iran_config "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$config_path"
-  waterwall_reverse_write_meta "iran" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path" "$WW_SELECTED_BIN_PATH"
-  waterwall_reverse_write_service "iran" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP Iran entry $profile" "$WW_SELECTED_BIN_PATH"
+  waterwall_reverse_write_meta "iran" "$profile" "$WW_PLAN_ENTRY_PORT" "$WW_PLAN_FOREIGN_HOST" "$WW_PLAN_DEST_HOST" "$WW_PLAN_DEST_PORT" "$WW_PLAN_CONTROL_PORT" "$WW_PLAN_SNI" "$service_name" "$meta_path" "$WW_PLAN_BIN_PATH"
+  waterwall_reverse_write_service "iran" "$profile" "$service_name" "$role_dir" "VIPTrue WaterWall Reverse TLS TCP Iran entry $profile" "$WW_PLAN_BIN_PATH"
 
   start_now="$(prompt_yes_no_value "Enable and start $service_name now?" "Y")"
   hy2_wg_start_service_if_requested "$service_name" "$start_now" || { pause; return; }
@@ -7770,6 +8023,31 @@ waterwall_reverse_delete_profile() {
   pause
 }
 
+waterwall_reverse_auto_install_binary_menu() {
+  local current_bin
+
+  title
+  echo -e "${CYAN}WaterWall Reverse TLS TCP Forward > Auto install compatible binary${NC}"
+  line
+  echo
+  waterwall_print_cpu_summary
+  echo
+  current_bin="$(waterwall_reverse_bin_path)"
+  echo "Current/default WaterWall binary: $current_bin"
+  echo "Old-CPU compatible binary: $WW_REV_OLDCPU_BIN"
+  if [[ -n "${VIPTRUE_WATERWALL_BIN:-}" ]]; then
+    echo "VIPTRUE_WATERWALL_BIN override: $VIPTRUE_WATERWALL_BIN"
+  fi
+  echo
+
+  if waterwall_choose_compatible_binary ""; then
+    pass_line "WaterWall compatible binary" "$WW_PLAN_BIN_PATH"
+  else
+    fail_line "WaterWall compatible binary" "no passing binary selected or installed"
+  fi
+  pause
+}
+
 waterwall_reverse_port_probe_menu() {
   local foreign_host ports_raw normalized_ports iran_ip port result
   local -a ports=()
@@ -7939,10 +8217,11 @@ waterwall_reverse_tcp_menu() {
     echo "7. Restart"
     echo "8. Run tests / proof commands"
     echo "9. Port reachability probe"
-    echo "10. Delete profile"
-    echo "11. Back"
+    echo "10. Auto install compatible WaterWall binary"
+    echo "11. Delete profile"
+    echo "12. Back"
     echo
-    read -r -p "Enter your choice [1-11]: " choice
+    read -r -p "Enter your choice [1-12]: " choice
 
     case "$choice" in
       1) waterwall_reverse_setup_foreign ;;
@@ -7954,8 +8233,9 @@ waterwall_reverse_tcp_menu() {
       7) waterwall_reverse_restart_profile ;;
       8) waterwall_reverse_run_profile_tests ;;
       9) waterwall_reverse_port_probe_menu ;;
-      10) waterwall_reverse_delete_profile ;;
-      11) break ;;
+      10) waterwall_reverse_auto_install_binary_menu ;;
+      11) waterwall_reverse_delete_profile ;;
+      12) break ;;
       *) echo -e "${RED}Invalid choice.${NC}"; sleep 1 ;;
     esac
   done

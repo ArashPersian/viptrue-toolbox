@@ -159,12 +159,28 @@ Before writing or starting WaterWall services, the helper now runs a binary
 self-test. If `/usr/local/bin/waterwall --help` or a custom binary crashes with
 `Illegal instruction`, `signal=ILL`, `invalid opcode`, `core dumped`, or exit
 code `132`, the tool does not create/start the service. On older x86_64 CPUs
-without AVX2, such as some Ivy Bridge VPS hosts, the release binary may be incompatible. Use a
-newer VPS CPU or provide a compatible binary:
+without AVX2, such as some Ivy Bridge VPS hosts, the release binary may be
+incompatible.
+
+Use `Auto install compatible WaterWall binary` from the WaterWall menu, or run
+Foreign / Iran setup and accept the prompted auto install/build path, to build a
+compatible WaterWall binary from source with the `linux-gcc-x64-old-cpu` preset.
+The toolbox installs that binary at:
+
+```text
+/opt/viptrue-waterwall/bin/waterwall-oldcpu
+```
+
+Setup stores the selected binary path in `profile.meta` as `waterwall_bin` and
+uses the same path in the generated systemd service. `VIPTRUE_WATERWALL_BIN`
+still overrides automatic selection:
 
 ```bash
 VIPTRUE_WATERWALL_BIN=/path/to/waterwall bash viptrue.sh
 ```
+
+Package/dependency installation prompts default to No, and services are not
+created until the selected binary passes self-test.
 
 If a same-profile WaterWall service is already failed or crash-looping, the
 tool offers to stop and reset only that managed service. It does not stop
