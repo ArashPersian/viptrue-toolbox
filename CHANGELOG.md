@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.7 - Unreleased
+
+- Added a CPU-aware WaterWall binary chooser for Reverse TLS TCP profiles that
+  keeps `VIPTRUE_WATERWALL_BIN` as the first-choice override, self-tests every
+  selected binary, and refuses profile writes/starts until a binary passes.
+- Added automatic compatible binary installation for old x86_64 CPUs without
+  AVX2 by building WaterWall from source with the `linux-gcc-x64-old-cpu`
+  preset and installing it at `/opt/viptrue-waterwall/bin/waterwall-oldcpu`.
+- Added `Auto install compatible WaterWall binary` under the WaterWall Reverse
+  TLS TCP menu with CPU summary, current/default binary self-test, and
+  default-No build/dependency prompts.
+- Kept stock release download/install support for compatible hosts while
+  falling back to the old-CPU build when the stock binary fails with Illegal
+  instruction / signal ILL / exit code `132`.
+
 ## 0.4.6 - Unreleased
 
 - Added a WaterWall binary runtime self-test before Foreign or Iran services are
