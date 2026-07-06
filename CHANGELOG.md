@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.7 - Unreleased
+
+- Added `Utility Tools -> Egress IP / SNAT Manager` for server-level egress
+  IPv4/IPv6 SNAT on PasarGuard nodes with second IPs, Floating IPs, or routed
+  IPv6.
+- Added read-only egress diagnostics for local addresses, default routes,
+  detected IPv4/IPv6 default interfaces, current public egress IPs, forwarding
+  state, and managed SNAT/MASQUERADE rule visibility.
+- Added IPv4 egress configuration with the safe default limited to VPN/private
+  source subnets, plus an explicit whole-server SNAT mode.
+- Added IPv6 egress configuration with IPv6-only warnings and separate IPv4/IPv6
+  config fields.
+- Added readable config at `/etc/viptrue-toolbox/egress-snat.conf`, managed
+  `VIPTRUE_EGRESS_SNAT` rule comments, iptables backups, idempotent persistence
+  through `viptrue-egress-snat.service`, and optional `netfilter-persistent`.
+- Added rollback that removes only VIPTrue-managed SNAT rules and leaves UFW,
+  INPUT rules, default routes, and manual rules alone.
+
 ## 0.4.6 - Unreleased
 
 - Added a WaterWall binary runtime self-test before Foreign or Iran services are
