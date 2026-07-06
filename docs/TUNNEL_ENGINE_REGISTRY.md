@@ -12,9 +12,10 @@ data files on the server.
 - TCP / web-like: REALITY, XHTTP, gRPC, WebTunnel, NaiveProxy, OBFS4,
   ShadowTLS, and generic TCP forward are scaffolded or planned.
 - Reverse / Iran-specific: WaterWall Reverse TLS is available through Manual
-  Tunnel Lab for private TCP forwarding. Reverse WS/gRPC, Xray reverse, reverse
-  SSH, Chisel, GOST, and FRP/Rathole remain registered as next-stage reverse
-  candidates.
+  Tunnel Lab for private TCP forwarding, with binary self-test, CPU/AVX2 hints,
+  and Iran control-port reachability checks. Reverse WS/gRPC, Xray reverse,
+  reverse SSH, Chisel, GOST, and FRP/Rathole remain registered as next-stage
+  reverse candidates.
 - CDN / clean-IP / operator-specific: Cloudflare, ArvanCloud, and IPv6 bypass
   entries are marked ISP-specific where appropriate.
 - DNS / emergency hard-mode: DNSTT, Slipstream DNS, Iodine, dns2tcp, DoH, DoT,

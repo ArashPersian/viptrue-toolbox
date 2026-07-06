@@ -155,6 +155,27 @@ destination port `5049`, and choose a separate tunnel control TCP port such as
 active and you confirm, and archives managed files instead of hard-deleting
 them.
 
+Before writing or starting WaterWall services, the helper now runs a binary
+self-test. If `/usr/local/bin/waterwall --help` or a custom binary crashes with
+`Illegal instruction`, `signal=ILL`, `invalid opcode`, `core dumped`, or exit
+code `132`, the tool does not create/start the service. On older x86_64 CPUs
+without AVX2, such as some Ivy Bridge VPS hosts, the release binary may be incompatible. Use a
+newer VPS CPU or provide a compatible binary:
+
+```bash
+VIPTRUE_WATERWALL_BIN=/path/to/waterwall bash viptrue.sh
+```
+
+If a same-profile WaterWall service is already failed or crash-looping, the
+tool offers to stop and reset only that managed service. It does not stop
+unrelated tunnels.
+
+Iran / Entry setup also probes the Foreign control TCP port before writing the
+profile. A failed probe defaults to not continuing and usually points to a
+provider security group, firewall/NACL, blocked TCP port, wrong IP/domain, or
+missing Foreign listener. Use `Port reachability probe` from the WaterWall menu
+to test candidate ports such as `443,80,2053,2083,2087,2096,8443,8080`.
+
 Architecture notes:
 
 - [Tunnel Engine Registry](docs/TUNNEL_ENGINE_REGISTRY.md)
