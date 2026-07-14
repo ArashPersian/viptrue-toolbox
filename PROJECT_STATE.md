@@ -1,71 +1,81 @@
 # Project State
 
-Version: 0.4.7
-Branch: fasttrack/egress-snat-manager
-Base commit: main at implementation time
-Commit: pending PR branch
-PR status: preparing Egress IP / SNAT Manager
-Release status: release/tag not created; requires explicit user confirmation
+Version: 0.4.8
+Branch: fasttrack/download-mirror-manager
+Base commit: 54488fae726037d7edbc54b59bee9f68abbebe91
+Commit: pending PR branch commit
+PR status: preparing Fast Track: Download Mirror Manager
+Release status: no release, tag, or deploy in this batch
 
 ## Scope
 
-- Add `Utility Tools -> Egress IP / SNAT Manager` as an independent module.
-- Support server-level egress IP / Source NAT for PasarGuard shared Core/Node
-  setups where each real VPS must expose its own second, floating, or IPv6
-  egress address.
-- Keep Xray `sendThrough` guidance separate from server-level SNAT:
-  `sendThrough` is suitable for one server with multiple hosts, while
-  server-level SNAT is suitable for multiple real servers with separate egress
-  IPs.
-- Add read-only status diagnostics for addresses, default routes, current
-  public IPv4/IPv6 egress, forwarding state, managed SNAT rules, and nft hints.
-- Add IPv4 SNAT configuration with safe default scope limited to VPN/private
-  source subnets.
-- Add IPv6 SNAT configuration with explicit IPv6 support warning and separate
-  IPv6 config fields.
-- Add persistence through `netfilter-persistent` when selected, otherwise a
-  managed idempotent `viptrue-egress-snat.service`.
-- Add rollback that removes only rules tagged with `VIPTRUE_EGRESS_SNAT`.
-- Add egress tests using `curl -4`, `curl -6`, and optional `curl --interface`.
+- Add a central mirror-aware download API in `lib/download.sh`.
+- Add `Utility Tools -> Download / Mirror Manager`.
+- Add provider-neutral bootstrap git/archive fallback.
+- Preserve official GitHub-first behavior when no mirror is configured.
+- Support mirror-first, official-first, mirror-only, and official-only modes.
+- Add the central asset cache under
+  `/var/cache/viptrue-toolbox/assets` by default.
+- Refactor active WaterWall, Syncplay, sing-box, and offline bundle acquisition
+  paths through the central layer.
+- Document mirror layout, manifest/checksum conventions, Iran compatibility, and
+  remaining direct-download work.
 
 ## Safety Rules
 
-- Do not alter default routes without explicit future work.
-- Do not add INPUT rules.
-- Do not touch UFW rules directly.
-- Do not remove manual iptables/nft rules.
-- Before applying or rolling back managed SNAT, write an iptables backup under
-  `/root/viptrue-iptables-backup-TIMESTAMP.rules`.
-- Tag every managed SNAT rule with comment `VIPTRUE_EGRESS_SNAT`.
-- Default IPv4 scope is VPN/private subnets only, not whole-server egress.
-- If the selected egress IP is not assigned on the server, warn and require
-  explicit confirmation before continuing.
+- Do not commit secrets, credentials, private CDN domains, production endpoints,
+  release tags, or deployment configuration.
+- Parse only whitelisted mirror config keys; do not evaluate `mirror.conf` as a
+  shell script.
+- Never silently ignore a failed download.
+- Use partial files and atomic moves for completed downloads.
+- Verify SHA256 before chmod/install/execute whenever a checksum is supplied.
+- Keep normal non-Iran installs working with official-first defaults.
+- Iran mode forces `VIPTRUE_USE_SNAP=no`; apt still requires its own reachable
+  mirror or proxy.
+- No release, tag, deploy, production secret, endpoint, or real traffic change is
+  included.
 
 ## Checks
 
 Local checks run:
 
-- `bash -n /workspace/viptrue-local/menus/utility.sh /workspace/viptrue-local/modules/utility/08-egress-snat-manager.sh`
-- `bash -n /workspace/viptrue-local/modules/utility/08-egress-snat-manager.sh`
-- `printf '0\n' | TERM=xterm bash /workspace/viptrue-local/menus/utility.sh`
+- `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh lib/download.sh modules/utility/*mirror*.sh`
+- `bash -n bootstrap.sh`
+- Utility menu smoke confirms `Download / Mirror Manager` is visible and Back
+  returns cleanly.
+- Config write/read smoke with a temporary `VIPTRUE_CONFIG_FILE`.
+- Static mirror-first order/fallback test with local file-backed fetch stubs.
+- Static bootstrap archive fallback path check for
+  `VIPTRUE_MIRROR_BASE/repo/<branch>.tar.gz` and `VIPTRUE_ARCHIVE_URL`.
+- Repository scan confirms no hardcoded private CDN domain in changed files.
+- ShellCheck workflow expanded to include the central library, wrappers, and
+  manager; GitHub Actions result remains the remote source of truth.
 
-Pending checks:
+## Refactored Download Paths
 
-- Full repository `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh modules/utility/08-egress-snat-manager.sh` on a local checkout.
-- GitHub Actions ShellCheck, if configured.
-- Live SNAT proof on Ubuntu 22.04/24.04 VPS with a second IPv4/Floating IP.
-- Live IPv6 proof on a VPS with routed IPv6 and ip6tables NAT support.
+- `bootstrap.sh`: GitHub git path plus mirror/archive fallback.
+- WaterWall release ZIP: central asset cache and pinned SHA256 verification.
+- Syncplay: git clone/update or mirror archive.
+- sing-box: release metadata, checksum, and archive through central fetch.
+- VIPTrue offline assets bundle: official/mirror source through central fetch.
 
-## Remaining Issues
+## Remaining Issues / TODOs
 
-- The Codex workspace could not clone GitHub directly in this environment, so
-  non-destructive local syntax/smoke checks were run against generated files.
-- Live SNAT changes must be tested carefully on a non-critical VPS first.
-- IPv6 SNAT/NAT66 support varies by kernel/provider and should be treated as
-  optional until proven on the target VPS.
+- The legacy `modules/utility/04-tunnel-manager.sh` remains a large monolithic
+  module with older Hysteria2/Chisel acquisition paths. The active WaterWall
+  menu now runs through `04-tunnel-manager-mirror.sh`, but remaining release
+  fetches must be split into smaller modules and migrated to
+  `viptrue_fetch_url`.
+- Public-IP lookup and connectivity probe URLs are diagnostics, not install
+  assets, and remain direct by design.
+- A real mirror/CDN must publish the documented layout and checksums before
+  mirror-only mode can be proven end to end on an Iran VPS.
+- APT access must be tested separately because the VIPTrue CDN does not proxy
+  distro repositories.
 
 ## Next Exact Step
 
-Open the PR for `fasttrack/egress-snat-manager`, wait for checks, review the
-diff, then test on one non-critical PasarGuard node with a second IPv4. Ask for
-explicit confirmation before creating a GitHub Release/tag for `0.4.7`.
+Open `Fast Track: Download Mirror Manager`, wait for GitHub Actions/ShellCheck,
+inspect the changed-file scope, and merge into `main` only if checks are green or
+advisory-only with no actionable errors. Do not release, tag, or deploy.

@@ -9,7 +9,6 @@ on:
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - name: Checkout
@@ -20,13 +19,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Advisory ShellCheck for active entry points
-        continue-on-error: true
+      - name: Strict ShellCheck for download manager paths
         run: |
           shellcheck -x -P . \
-            viptrue.sh \
-            lib/ui.sh \
-            menus/main.sh \
-            menus/work.sh \
+            bootstrap.sh \
+            lib/download.sh \
             menus/utility.sh \
-            modules/utility/04-tunnel-manager.sh
+            modules/private/01-syncplay-server-fixed.sh \
+            modules/utility/03-offline-assets-mirror.sh \
+            modules/utility/04-tunnel-manager-mirror.sh \
+            modules/utility/09-download-mirror-manager.sh
+
+      - name: Advisory ShellCheck for legacy tunnel module
+        continue-on-error: true
+        run: |
+          shellcheck -x -P . modules/utility/04-tunnel-manager.sh
