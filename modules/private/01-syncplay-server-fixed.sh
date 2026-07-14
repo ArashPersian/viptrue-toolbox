@@ -4,6 +4,24 @@ set -Eeuo pipefail
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=modules/private/01-syncplay-server.sh
 source "$BASE_DIR/modules/private/01-syncplay-server.sh"
+# shellcheck source=lib/download.sh
+source "$BASE_DIR/lib/download.sh"
+
+# Mirror-aware overrides. The original manager remains the source of the UI and
+# service logic; only package/repository acquisition is centralized here.
+install_syncplay_dependencies() {
+  if ! is_debian_like || ! have_cmd apt-get; then
+    echo -e "${RED}Unsupported OS.${NC} This installer expects Ubuntu/Debian with apt."
+    return 1
+  fi
+  viptrue_apt_install git make python3 python3-twisted ca-certificates
+}
+
+clone_or_update_syncplay() {
+  local branch="${VIPTRUE_SYNCPLAY_BRANCH:-master}"
+  local mirror_path="assets/syncplay/${branch}/syncplay-${branch}.tar.gz"
+  viptrue_git_or_archive "$SYNCPLAY_REPO_URL" "$branch" "$SYNCPLAY_INSTALL_DIR" "$mirror_path"
+}
 
 # Hotfix for v0.4.3: avoid local variable shadowing when returning values
 # through printf -v under set -u. The original prompt function used local
