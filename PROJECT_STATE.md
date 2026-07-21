@@ -1,81 +1,63 @@
 # Project State
 
-Version: 0.4.8
-Branch: fasttrack/download-mirror-manager
-Base commit: 54488fae726037d7edbc54b59bee9f68abbebe91
+Version: 0.4.9
+Branch: fasttrack/v049-mirror-wrapper-fixes
+Base commit: 42e5beac0ebe503a156efb2f2eb1b8ed3213e621
 Commit: pending PR branch commit
-PR status: preparing Fast Track: Download Mirror Manager
+PR status: preparing Fast Track: Mirror Wrapper Fixes
 Release status: no release, tag, or deploy in this batch
 
 ## Scope
 
-- Add a central mirror-aware download API in `lib/download.sh`.
-- Add `Utility Tools -> Download / Mirror Manager`.
-- Add provider-neutral bootstrap git/archive fallback.
-- Preserve official GitHub-first behavior when no mirror is configured.
-- Support mirror-first, official-first, mirror-only, and official-only modes.
-- Add the central asset cache under
-  `/var/cache/viptrue-toolbox/assets` by default.
-- Refactor active WaterWall, Syncplay, sing-box, and offline bundle acquisition
-  paths through the central layer.
-- Document mirror layout, manifest/checksum conventions, Iran compatibility, and
-  remaining direct-download work.
+- Fix `modules/utility/04-tunnel-manager-mirror.sh` so extracted legacy Tunnel
+  Manager definitions sourced from `/tmp` keep the real repository `BASE_DIR`.
+- Prevent `//lib/ui.sh: No such file or directory` when opening
+  `Utility Tools -> Tunnel Manager` through the mirror-aware wrapper.
+- Replace the Download / Mirror Manager APT status test with an isolated real
+  `apt-get update` probe that writes lists/cache into a temporary directory.
+- Keep the system APT lists untouched while avoiding false failures from
+  `apt-get -s update` on Ubuntu servers.
+- Bump the toolbox version to `0.4.9` and document the fix.
 
 ## Safety Rules
 
-- Do not commit secrets, credentials, private CDN domains, production endpoints,
-  release tags, or deployment configuration.
-- Parse only whitelisted mirror config keys; do not evaluate `mirror.conf` as a
-  shell script.
-- Never silently ignore a failed download.
-- Use partial files and atomic moves for completed downloads.
-- Verify SHA256 before chmod/install/execute whenever a checksum is supplied.
-- Keep normal non-Iran installs working with official-first defaults.
-- Iran mode forces `VIPTRUE_USE_SNAP=no`; apt still requires its own reachable
-  mirror or proxy.
+- No secrets, credentials, private CDN domains, production endpoints, release
+  tags, or deployment configuration were added.
+- No traffic forwarding, firewall rule, route, service, or production behavior is
+  changed by this patch.
+- The APT probe runs with temporary list/cache directories and removes them after
+  the check.
+- The Tunnel Manager wrapper still loads the legacy manager definitions and only
+  pins `BASE_DIR` before sourcing the temporary definitions file.
 - No release, tag, deploy, production secret, endpoint, or real traffic change is
   included.
 
 ## Checks
 
-Local checks run:
+Planned / expected checks for this PR:
 
+- `bash -n modules/utility/04-tunnel-manager-mirror.sh`
+- `bash -n modules/utility/09-download-mirror-manager.sh`
 - `bash -n viptrue.sh menus/main.sh menus/work.sh menus/utility.sh lib/download.sh modules/utility/*mirror*.sh`
-- `bash -n bootstrap.sh`
-- Utility menu smoke confirms `Download / Mirror Manager` is visible and Back
-  returns cleanly.
-- Config write/read smoke with a temporary `VIPTRUE_CONFIG_FILE`.
-- Static mirror-first order/fallback test with local file-backed fetch stubs.
-- Static bootstrap archive fallback path check for
-  `VIPTRUE_MIRROR_BASE/repo/<branch>.tar.gz` and `VIPTRUE_ARCHIVE_URL`.
-- Repository scan confirms no hardcoded private CDN domain in changed files.
-- ShellCheck workflow expanded to include the central library, wrappers, and
-  manager; GitHub Actions result remains the remote source of truth.
-
-## Refactored Download Paths
-
-- `bootstrap.sh`: GitHub git path plus mirror/archive fallback.
-- WaterWall release ZIP: central asset cache and pinned SHA256 verification.
-- Syncplay: git clone/update or mirror archive.
-- sing-box: release metadata, checksum, and archive through central fetch.
-- VIPTrue offline assets bundle: official/mirror source through central fetch.
+- Smoke: `Utility Tools -> Tunnel Manager` opens without `//lib/ui.sh` error.
+- Smoke: `Utility Tools -> Download / Mirror Manager -> Show download connectivity status` reports the APT probe correctly on an Ubuntu server where `apt-get update` works.
+- GitHub Actions ShellCheck remains the remote source of truth if configured.
 
 ## Remaining Issues / TODOs
 
 - The legacy `modules/utility/04-tunnel-manager.sh` remains a large monolithic
   module with older Hysteria2/Chisel acquisition paths. The active WaterWall
   menu now runs through `04-tunnel-manager-mirror.sh`, but remaining release
-  fetches must be split into smaller modules and migrated to
+  fetches must still be split into smaller modules and migrated to
   `viptrue_fetch_url`.
 - Public-IP lookup and connectivity probe URLs are diagnostics, not install
   assets, and remain direct by design.
-- A real mirror/CDN must publish the documented layout and checksums before
-  mirror-only mode can be proven end to end on an Iran VPS.
-- APT access must be tested separately because the VIPTrue CDN does not proxy
-  distro repositories.
+- Mirror asset coverage for WaterWall/sing-box/Syncplay must still be completed
+  in the external Arvan/Cloudflare bucket before full `mirror-only` asset tests.
 
 ## Next Exact Step
 
-Open `Fast Track: Download Mirror Manager`, wait for GitHub Actions/ShellCheck,
-inspect the changed-file scope, and merge into `main` only if checks are green or
-advisory-only with no actionable errors. Do not release, tag, or deploy.
+Open `Fast Track: Mirror Wrapper Fixes`, wait for GitHub Actions/ShellCheck,
+merge only if syntax/ShellCheck pass, then update the Arvan mirror archive
+`repo/main.tar.gz` and `checksums.txt` to contain version `0.4.9`. Do not
+release, tag, or deploy without explicit confirmation.

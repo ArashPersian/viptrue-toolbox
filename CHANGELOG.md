@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.9 - Unreleased
+
+- Fixed `modules/utility/04-tunnel-manager-mirror.sh` so extracted legacy Tunnel Manager definitions keep the real repository `BASE_DIR` instead of resolving it from a temporary `/tmp` file. This prevents `//lib/ui.sh: No such file or directory` when opening `Utility Tools -> Tunnel Manager`.
+- Replaced the Download / Mirror Manager APT status check with a real isolated `apt-get update` probe that writes package-list state into a temporary directory. This avoids false failures from `apt-get -s update` while keeping the system APT lists untouched.
+
 ## 0.4.8 - Unreleased
 
 - Added central `lib/download.sh` with mirror configuration loading, source-order
@@ -113,11 +118,6 @@
 
 - Added Hysteria2 OBFS WireGuard multi-forward setup for Foreign and Iran
   servers, profile protection, and handshake confidence tests.
-
-## 0.3.3 - Unreleased
-
-- Added project governance documents and advisory ShellCheck workflow.
-- Reworked Tunnel Manager around safe diagnostics and command previews.
 - Enforced the rule that Hysteria2 must not use UDP port 443.
 
 ## 0.3.2

@@ -13,6 +13,13 @@ load_tunnel_manager_definitions() {
   fi
   definitions_file="$(mktemp)"
   head -n "$((main_line - 1))" "$ORIGINAL_TUNNEL_MANAGER" > "$definitions_file"
+
+  # The extracted definitions are sourced from a temporary file. Some legacy
+  # definitions in 04-tunnel-manager.sh compute BASE_DIR from BASH_SOURCE[0];
+  # when sourced from /tmp that resolves to / and breaks lib/ui.sh lookups.
+  # Pin BASE_DIR back to the real repository root before sourcing.
+  sed -i "s|^BASE_DIR=.*|BASE_DIR=\"$BASE_DIR\"|" "$definitions_file"
+
   # shellcheck disable=SC1090
   source "$definitions_file"
   rm -f -- "$definitions_file"
