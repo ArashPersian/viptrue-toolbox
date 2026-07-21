@@ -67,6 +67,40 @@ mirror_manager_probe_url() {
   viptrue_download_fail "$label unreachable: $url"
 }
 
+mirror_manager_apt_update_probe() {
+  local tmp cmd rc=1
+
+  command -v apt-get >/dev/null 2>&1 || {
+    viptrue_download_fail "APT status: apt-get is unavailable."
+    return 1
+  }
+
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/lists/partial" "$tmp/cache/archives/partial"
+  cmd=(
+    apt-get
+    -o Acquire::Retries=1
+    -o Debug::NoLocking=1
+    -o "Dir::State::lists=$tmp/lists"
+    -o "Dir::Cache::archives=$tmp/cache/archives"
+    update
+  )
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 90 "${cmd[@]}" >/dev/null 2>&1 && rc=0 || rc=$?
+  else
+    "${cmd[@]}" >/dev/null 2>&1 && rc=0 || rc=$?
+  fi
+  rm -rf -- "$tmp"
+
+  if [[ "$rc" -eq 0 ]]; then
+    viptrue_download_pass "APT update probe completed."
+    return 0
+  fi
+  viptrue_download_fail "APT update probe failed. CDN settings do not fix APT access."
+  return "$rc"
+}
+
 show_download_connectivity_status() {
   local mirror_archive="" mirror_manifest=""
   title
@@ -105,15 +139,7 @@ show_download_connectivity_status() {
     viptrue_download_fail "Mirror main archive: cannot test without VIPTRUE_MIRROR_BASE."
   fi
 
-  if command -v apt-get >/dev/null 2>&1; then
-    if apt-get -s -o Debug::NoLocking=1 update >/dev/null 2>&1; then
-      viptrue_download_pass "APT update simulation/status completed."
-    else
-      viptrue_download_fail "APT update simulation/status failed. CDN settings do not fix APT access."
-    fi
-  else
-    viptrue_download_fail "APT status: apt-get is unavailable."
-  fi
+  mirror_manager_apt_update_probe || true
 
   echo
   echo "CDN/mirror configuration fixes toolbox, repository archive, and asset downloads."
@@ -235,7 +261,7 @@ download_offline_assets_bundle() {
   echo
 
   version="$(tr -d '[:space:]' < "$BASE_DIR/VERSION" 2>/dev/null || true)"
-  version="${version:-0.4.8}"
+  version="${version:-0.4.9}"
   name="offline-bundle"
   file="viptrue-offline-assets-${version}.tar.gz"
 
